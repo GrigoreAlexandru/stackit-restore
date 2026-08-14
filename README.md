@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/GrigoreAlexandru/stackit-restore.svg)](https://pkg.go.dev/github.com/GrigoreAlexandru/stackit-restore)
 [![Release](https://img.shields.io/github/v/release/GrigoreAlexandru/stackit-restore)](https://github.com/GrigoreAlexandru/stackit-restore/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 An interactive Go CLI tool for PostgreSQL dump and restore workflows on [STACKIT](https://www.stackit.cloud/) PostgreSQL Flex. Supports arrow-key guided TUI navigation, Point-In-Time (PIT) snapshot creation, custom binary `.dump` format, cross-database restoration, and single-line non-interactive CLI commands.
 
@@ -152,4 +152,4 @@ stackit-restore --action=restore --instance=Staging --database=app_stg --mode=du
 
 ## License
 
-Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
