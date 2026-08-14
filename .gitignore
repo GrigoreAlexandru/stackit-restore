@@ -1,6 +1,6 @@
 # Binaries
-stackit-restore
-scms-restore
+/stackit-restore
+/scms-restore
 
 # Environment & secrets
 .env
