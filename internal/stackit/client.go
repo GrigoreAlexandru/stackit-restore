@@ -37,13 +37,22 @@ func NewClient(cfg config.Config) (*Client, error) {
 	opts := []sdkconfig.ConfigurationOption{
 		sdkconfig.WithRegion(cfg.Region),
 	}
-	if cfg.ServiceAccountToken != "" {
+
+	if cfg.ServiceAccountKeyPath != "" {
+		opts = append(opts, sdkconfig.WithServiceAccountKeyPath(cfg.ServiceAccountKeyPath))
+	} else if cfg.ServiceAccountKey != "" {
+		opts = append(opts, sdkconfig.WithServiceAccountKey(cfg.ServiceAccountKey))
+	} else if cfg.ServiceAccountToken != "" {
 		opts = append(opts, sdkconfig.WithToken(cfg.ServiceAccountToken))
+	}
+
+	if cfg.PrivateKeyPath != "" {
+		opts = append(opts, sdkconfig.WithPrivateKeyPath(cfg.PrivateKeyPath))
 	}
 
 	c, err := postgresflex.NewAPIClient(opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create STACKIT postgresflex client: %w", err)
 	}
 
 	return &Client{

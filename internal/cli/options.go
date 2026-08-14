@@ -12,19 +12,20 @@ import (
 )
 
 type Options struct {
-	Action         string
-	Instance       string
-	Database       string
-	TargetInstance string
-	TargetDatabase string
-	Mode           string
-	PITRaw         string
-	Backup         string
-	DumpFile       string
-	ProjectID      string
-	Region         string
-	NonInteractive bool
-	Help           bool
+	Action                string
+	Instance              string
+	Database              string
+	TargetInstance        string
+	TargetDatabase        string
+	Mode                  string
+	PITRaw                string
+	Backup                string
+	DumpFile              string
+	ProjectID             string
+	Region                string
+	ServiceAccountKeyPath string
+	NonInteractive        bool
+	Help                  bool
 
 	PITParsed *time.Time
 }
@@ -50,6 +51,8 @@ func ParseOptions(args []string) (Options, error) {
 	fs.StringVar(&opts.DumpFile, "dump-file", "", "Path to local .dump file for restore from dump mode")
 	fs.StringVar(&opts.ProjectID, "project-id", "", "STACKIT Project ID override")
 	fs.StringVar(&opts.Region, "region", "", "STACKIT Region override")
+	fs.StringVar(&opts.ServiceAccountKeyPath, "sa-key-path", "", "Path to STACKIT Service Account Key JSON file")
+	fs.StringVar(&opts.ServiceAccountKeyPath, "service-account-key-path", "", "Path to STACKIT Service Account Key JSON file (alias)")
 	fs.BoolVar(&opts.NonInteractive, "non-interactive", false, "Run in non-interactive mode without TUI prompts")
 	fs.BoolVar(&opts.Help, "help", false, "Show help message and usage examples")
 	fs.BoolVar(&opts.Help, "h", false, "Show help message and usage examples (shorthand)")
@@ -67,6 +70,9 @@ func ParseOptions(args []string) (Options, error) {
 	}
 	if opts.Region != "" {
 		os.Setenv("STACKIT_REGION", opts.Region)
+	}
+	if opts.ServiceAccountKeyPath != "" {
+		os.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", opts.ServiceAccountKeyPath)
 	}
 
 	if opts.Action != "" || opts.Instance != "" || opts.Database != "" || opts.NonInteractive {
@@ -179,6 +185,7 @@ Global Flags:
   --pit string               Point-in-time datetime string (e.g. '2026-08-13 15:00:00' or RFC3339)
   --backup string            Backup name for restore from Stackit backup mode
   --dump-file string         Path to local .dump file for restore from dump mode
+  --sa-key-path string       Path to STACKIT Service Account Key JSON file (alias: --service-account-key-path)
   --project-id string        STACKIT Project ID override
   --region string            STACKIT Region override
   --non-interactive          Force single-line non-interactive mode
@@ -186,14 +193,15 @@ Global Flags:
 Environment Variables:
   STACKIT_PROJECT_ID                  STACKIT Project ID (required)
   STACKIT_REGION                      STACKIT Region (required)
-  STACKIT_SERVICE_ACCOUNT_TOKEN       STACKIT Service Account Bearer Token (or STACKIT_SERVICE_ACCOUNT_TOKEN_FILE)
+  STACKIT_SERVICE_ACCOUNT_KEY_PATH    Path to STACKIT Service Account Key JSON file (KeyAuth flow)
+  STACKIT_SERVICE_ACCOUNT_TOKEN       STACKIT Service Account Bearer Token (TokenAuth flow)
   STACKIT_POSTGRES_USER               PostgreSQL username (or STACKIT_POSTGRES_USER_FILE)
   STACKIT_POSTGRES_PASSWORD           PostgreSQL password (or STACKIT_POSTGRES_PASSWORD_FILE)
   POSTGRES_DUMP_DIR                   Local directory to store dump artifacts (default: 'dumps')
 
 Single-Line Usage Examples:
-  # Dump from live data directly:
-  stackit-restore --action=dump --instance=Production --database=app_prod --mode=live
+  # Dump from live data directly using KeyAuth flow:
+  stackit-restore --action=dump --instance=Production --database=app_prod --mode=live --sa-key-path=/etc/stackit/key.json
 
   # Dump from a STACKIT replica at a specific Point-In-Time datetime:
   stackit-restore --action=dump --instance=Production --database=app_prod --mode=pit --pit="2026-08-13 15:00:00"

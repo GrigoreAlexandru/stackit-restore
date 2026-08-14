@@ -58,9 +58,12 @@ Create a `.env` file or export environment variables:
 # STACKIT Authentication & Region (Required)
 STACKIT_PROJECT_ID=your-stackit-project-id
 STACKIT_REGION=eu01
-STACKIT_SERVICE_ACCOUNT_TOKEN=your-service-account-bearer-token
 
-# Alternatively, mount token from a secret file:
+# Option A: Service Account Key JSON File (Recommended KeyAuth Flow)
+STACKIT_SERVICE_ACCOUNT_KEY_PATH=/path/to/service_account_key.json
+
+# Option B: Service Account Bearer Token (TokenAuth Flow)
+# STACKIT_SERVICE_ACCOUNT_TOKEN=your-service-account-bearer-token
 # STACKIT_SERVICE_ACCOUNT_TOKEN_FILE=/path/to/token.txt
 
 # PostgreSQL Credentials

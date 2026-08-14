@@ -7,7 +7,7 @@ import (
 func TestLoadUsesDefaultsAndValidatesRequiredValues(t *testing.T) {
 	t.Setenv("STACKIT_PROJECT_ID", "proj-123")
 	t.Setenv("STACKIT_REGION", "eu01")
-	t.Setenv("STACKIT_SERVICE_ACCOUNT_TOKEN", "token-xyz")
+	t.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", "/path/to/sa-key.json")
 
 	cfg, err := Load()
 	if err != nil {
@@ -20,8 +20,8 @@ func TestLoadUsesDefaultsAndValidatesRequiredValues(t *testing.T) {
 	if cfg.Region != "eu01" {
 		t.Fatalf("expected region eu01, got %q", cfg.Region)
 	}
-	if cfg.ServiceAccountToken != "token-xyz" {
-		t.Fatalf("expected service account token token-xyz, got %q", cfg.ServiceAccountToken)
+	if cfg.ServiceAccountKeyPath != "/path/to/sa-key.json" {
+		t.Fatalf("expected service account key path /path/to/sa-key.json, got %q", cfg.ServiceAccountKeyPath)
 	}
 	if cfg.OperationPollIntervalSeconds != 10 {
 		t.Fatalf("expected default poll interval 10, got %d", cfg.OperationPollIntervalSeconds)
@@ -34,10 +34,10 @@ func TestLoadUsesDefaultsAndValidatesRequiredValues(t *testing.T) {
 	}
 }
 
-func TestLoadReadsEnvironmentVariables(t *testing.T) {
+func TestLoadReadsKeyFlowEnvironmentVariables(t *testing.T) {
 	t.Setenv("STACKIT_PROJECT_ID", "from-env")
 	t.Setenv("STACKIT_REGION", "eu03")
-	t.Setenv("STACKIT_SERVICE_ACCOUNT_TOKEN", "token-from-env")
+	t.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", "/etc/stackit/key.json")
 	t.Setenv("STACKIT_OPERATION_POLL_INTERVAL_SECONDS", "25")
 	t.Setenv("STACKIT_OPERATION_TIMEOUT_SECONDS", "900")
 	t.Setenv("POSTGRES_DUMP_DIR", "/tmp/custom-dump-dir")
@@ -53,8 +53,8 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 	if cfg.Region != "eu03" {
 		t.Fatalf("expected env override region, got %q", cfg.Region)
 	}
-	if cfg.ServiceAccountToken != "token-from-env" {
-		t.Fatalf("expected service account token from env, got %q", cfg.ServiceAccountToken)
+	if cfg.ServiceAccountKeyPath != "/etc/stackit/key.json" {
+		t.Fatalf("expected sa key path from env, got %q", cfg.ServiceAccountKeyPath)
 	}
 	if cfg.OperationPollIntervalSeconds != 25 {
 		t.Fatalf("expected poll interval from env 25, got %d", cfg.OperationPollIntervalSeconds)
@@ -70,6 +70,7 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 func TestLoadRejectsMissingRequiredFields(t *testing.T) {
 	t.Setenv("STACKIT_PROJECT_ID", "")
 	t.Setenv("STACKIT_REGION", "")
+	t.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", "")
 	t.Setenv("STACKIT_SERVICE_ACCOUNT_TOKEN", "")
 
 	_, err := Load()
@@ -81,7 +82,7 @@ func TestLoadRejectsMissingRequiredFields(t *testing.T) {
 func TestLoadRejectsInvalidIntervalValues(t *testing.T) {
 	t.Setenv("STACKIT_PROJECT_ID", "proj-123")
 	t.Setenv("STACKIT_REGION", "eu01")
-	t.Setenv("STACKIT_SERVICE_ACCOUNT_TOKEN", "token-123")
+	t.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", "/path/to/key.json")
 	t.Setenv("STACKIT_OPERATION_POLL_INTERVAL_SECONDS", "0")
 
 	_, err := Load()

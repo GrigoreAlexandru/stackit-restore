@@ -8,9 +8,12 @@ import (
 )
 
 type Config struct {
-	ProjectID           string
-	Region              string
-	ServiceAccountToken string
+	ProjectID             string
+	Region                string
+	ServiceAccountKeyPath string
+	ServiceAccountKey     string
+	PrivateKeyPath        string
+	ServiceAccountToken   string
 
 	OperationPollIntervalSeconds int
 	OperationTimeoutSeconds      int
@@ -38,6 +41,17 @@ func Load() (Config, error) {
 
 	cfg.ProjectID = os.Getenv("STACKIT_PROJECT_ID")
 	cfg.Region = os.Getenv("STACKIT_REGION")
+
+	cfg.ServiceAccountKeyPath = firstNonEmpty(
+		os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH"),
+		os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH_FILE"),
+		os.Getenv("STACKIT_CREDENTIALS_PATH"),
+	)
+	cfg.ServiceAccountKey = os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY")
+	cfg.PrivateKeyPath = firstNonEmpty(
+		os.Getenv("STACKIT_PRIVATE_KEY_PATH"),
+		os.Getenv("STACKIT_PRIVATE_KEY"),
+	)
 	cfg.ServiceAccountToken = firstNonEmpty(
 		os.Getenv("STACKIT_SERVICE_ACCOUNT_TOKEN"),
 		os.Getenv("STACKIT_TOKEN"),
@@ -91,8 +105,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("STACKIT_REGION is required")
 	}
 
-	if strings.TrimSpace(c.ServiceAccountToken) == "" {
-		return fmt.Errorf("STACKIT_SERVICE_ACCOUNT_TOKEN is required")
+	if !c.HasAuth() {
+		return fmt.Errorf("STACKIT authentication is required: set STACKIT_SERVICE_ACCOUNT_KEY_PATH, STACKIT_SERVICE_ACCOUNT_KEY, or STACKIT_SERVICE_ACCOUNT_TOKEN")
 	}
 
 	if c.OperationPollIntervalSeconds <= 0 {
@@ -112,6 +126,22 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c Config) HasAuth() bool {
+	if strings.TrimSpace(c.ServiceAccountKeyPath) != "" ||
+		strings.TrimSpace(c.ServiceAccountKey) != "" ||
+		strings.TrimSpace(c.PrivateKeyPath) != "" ||
+		strings.TrimSpace(c.ServiceAccountToken) != "" {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		credPath := home + "/.stackit/credentials.json"
+		if _, err := os.Stat(credPath); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(values ...string) string {
