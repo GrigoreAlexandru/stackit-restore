@@ -1,0 +1,14 @@
+# Binaries
+stackit-restore
+scms-restore
+
+# Environment & secrets
+.env
+*.env
+
+# Local dump storage
+dumps/
+/tmp/
+
+# Plan files
+plan.md
