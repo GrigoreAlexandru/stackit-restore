@@ -24,6 +24,9 @@ func TestParseOptions_Help(t *testing.T) {
 }
 
 func TestParseOptions_SingleLineDump(t *testing.T) {
+	t.Setenv("PRODUCTION_USER", "prod_user")
+	t.Setenv("PRODUCTION_PASS", "prod_pass")
+
 	args := []string{
 		"--action=dump",
 		"--instance=Production",
@@ -62,6 +65,9 @@ func TestParseOptions_SingleLineDump(t *testing.T) {
 }
 
 func TestParseOptions_SingleLineRestoreFromBackup(t *testing.T) {
+	t.Setenv("STAGING_USER", "stg_user")
+	t.Setenv("STAGING_PASS", "stg_pass")
+
 	args := []string{
 		"--action=restore",
 		"--instance=Staging",
@@ -95,20 +101,24 @@ func TestParseOptions_SingleLineRestoreFromBackup(t *testing.T) {
 	}
 }
 
-func TestParseOptions_TargetDatabaseOverride(t *testing.T) {
+func TestParseOptions_TargetInstanceCrossCloudAllowedWithCredentials(t *testing.T) {
+	t.Setenv("PRODUCTION_USER", "prod_user")
+	t.Setenv("PRODUCTION_PASS", "prod_pass")
+	t.Setenv("STAGING_USER", "stg_user")
+	t.Setenv("STAGING_PASS", "stg_pass")
+
 	args := []string{
 		"--action=restore",
 		"--instance=Production",
 		"--database=app_prod",
 		"--target-instance=Staging",
 		"--target-database=app_stg",
-		"--mode=backup",
-		"--backup=prod-auto-20260112",
+		"--mode=live_db",
 	}
 
 	opts, err := ParseOptions(args)
 	if err != nil {
-		t.Fatalf("unexpected error parsing target options: %v", err)
+		t.Fatalf("unexpected error parsing target options with Staging target: %v", err)
 	}
 
 	if opts.Instance != "Production" || opts.Database != "app_prod" {
@@ -119,7 +129,37 @@ func TestParseOptions_TargetDatabaseOverride(t *testing.T) {
 	}
 }
 
+func TestParseOptions_LocalSourceToLocalTarget(t *testing.T) {
+	t.Setenv("LOCAL_USER", "loc_user")
+	t.Setenv("LOCAL_PASS", "loc_pass")
+
+	args := []string{
+		"--action=restore",
+		"--instance=local",
+		"--database=app_source",
+		"--target-instance=local",
+		"--target-database=app_dest",
+		"--mode=live_db",
+	}
+
+	opts, err := ParseOptions(args)
+	if err != nil {
+		t.Fatalf("unexpected error parsing local to local restore: %v", err)
+	}
+
+	if opts.Instance != "local" || opts.TargetInstance != "local" {
+		t.Errorf("expected local to local, got %s -> %s", opts.Instance, opts.TargetInstance)
+	}
+}
+
 func TestParseOptions_ValidationErrors(t *testing.T) {
+	t.Setenv("PRODUCTION_USER", "prod_user")
+	t.Setenv("PRODUCTION_PASS", "prod_pass")
+	t.Setenv("STAGING_USER", "stg_user")
+	t.Setenv("STAGING_PASS", "stg_pass")
+	t.Setenv("UNCONFIGURED_USER", "")
+	t.Setenv("UNCONFIGURED_PASS", "")
+
 	invalidCases := []struct {
 		name string
 		args []string
@@ -135,6 +175,14 @@ func TestParseOptions_ValidationErrors(t *testing.T) {
 		{
 			name: "missing pit datetime for pit dump mode",
 			args: []string{"--action=dump", "--instance=Production", "--database=app_prod", "--mode=pit"},
+		},
+		{
+			name: "missing credentials for source instance",
+			args: []string{"--action=dump", "--instance=Unconfigured", "--database=app_prod", "--mode=live"},
+		},
+		{
+			name: "missing credentials for destination instance",
+			args: []string{"--action=restore", "--instance=Production", "--database=app_prod", "--target-instance=Unconfigured", "--target-database=app_dest", "--mode=live_db"},
 		},
 		{
 			name: "missing backup name for backup restore mode",

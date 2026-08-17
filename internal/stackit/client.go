@@ -36,18 +36,7 @@ type Database struct {
 func NewClient(cfg config.Config) (*Client, error) {
 	opts := []sdkconfig.ConfigurationOption{
 		sdkconfig.WithRegion(cfg.Region),
-	}
-
-	if cfg.ServiceAccountKeyPath != "" {
-		opts = append(opts, sdkconfig.WithServiceAccountKeyPath(cfg.ServiceAccountKeyPath))
-	} else if cfg.ServiceAccountKey != "" {
-		opts = append(opts, sdkconfig.WithServiceAccountKey(cfg.ServiceAccountKey))
-	} else if cfg.ServiceAccountToken != "" {
-		opts = append(opts, sdkconfig.WithToken(cfg.ServiceAccountToken))
-	}
-
-	if cfg.PrivateKeyPath != "" {
-		opts = append(opts, sdkconfig.WithPrivateKeyPath(cfg.PrivateKeyPath))
+		sdkconfig.WithServiceAccountKeyPath(cfg.ServiceAccountKeyPath),
 	}
 
 	c, err := postgresflex.NewAPIClient(opts...)
@@ -60,6 +49,14 @@ func NewClient(cfg config.Config) (*Client, error) {
 		projectID: cfg.ProjectID,
 		region:    cfg.Region,
 	}, nil
+}
+
+func (c *Client) Region() string {
+	return c.region
+}
+
+func (c *Client) ProjectID() string {
+	return c.projectID
 }
 
 func (c *Client) GetInstances(ctx context.Context) ([]Instance, error) {

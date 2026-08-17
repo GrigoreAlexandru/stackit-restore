@@ -38,7 +38,7 @@ func run(ctx context.Context) error {
 	}
 
 	cfg, err := config.Load()
-	if err == nil && cfg.ProjectID != "" && cfg.ServiceAccountToken != "" {
+	if err == nil && cfg.ProjectID != "" && cfg.HasAuth() {
 		if err := api.CheckPreflightTools(); err != nil {
 			return err
 		}
@@ -63,12 +63,16 @@ func newDummyAPI() *DummyAPI {
 	t0 := time.Date(2026, time.January, 12, 8, 0, 0, 0, time.UTC)
 
 	instances := []api.Instance{
+		api.InstanceLocal,
 		{Name: "Production", ID: "instance-prod-001"},
 		{Name: "Staging", ID: "instance-stg-001"},
 		{Name: "Development", ID: "instance-dev-001"},
 	}
 
 	databases := map[string][]api.Database{
+		"local": {
+			{Name: "app_local", ID: 1, Owner: "postgres"},
+		},
 		"instance-prod-001": {
 			{Name: "app_prod", ID: 101, Owner: "app_owner"},
 			{Name: "audit_prod", ID: 102, Owner: "audit_owner"},

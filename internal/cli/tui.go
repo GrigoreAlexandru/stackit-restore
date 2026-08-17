@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/api"
+	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 )
@@ -199,6 +200,11 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		return fmt.Errorf("source database %q not found in instance %q", opts.Database, sourceInstance.Name)
 	}
 
+	if !postgres.HasCredentials(sourceInstance.Name) {
+		hint := postgres.GetMissingCredentialsHint(sourceInstance.Name)
+		return fmt.Errorf("source instance %q is unavailable: missing %s in environment", sourceInstance.Name, hint)
+	}
+
 	switch action(opts.Action) {
 	case actionDump:
 		mode := api.DumpMode(opts.Mode)
@@ -233,6 +239,11 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			return fmt.Errorf("destination instance %q not found", opts.TargetInstance)
 		}
 
+		if !postgres.HasCredentials(targetInstance.Name) {
+			hint := postgres.GetMissingCredentialsHint(targetInstance.Name)
+			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", targetInstance.Name, hint)
+		}
+
 		targetDatabases, err := apiClient.GetDatabases(ctx, targetInstance)
 		if err != nil {
 			return fmt.Errorf("get databases for destination instance %q: %w", targetInstance.Name, err)
@@ -248,7 +259,11 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			}
 		}
 		if !foundTargetDB {
-			return fmt.Errorf("destination database %q not found in instance %q", opts.TargetDatabase, targetInstance.Name)
+			if strings.EqualFold(targetInstance.Name, "local") {
+				targetDatabase = api.Database{Name: opts.TargetDatabase, ID: 1, Owner: "postgres"}
+			} else {
+				return fmt.Errorf("destination database %q not found in instance %q", opts.TargetDatabase, targetInstance.Name)
+			}
 		}
 
 		mode := restoreMode(opts.Mode)
@@ -363,6 +378,13 @@ func Execute(ctx context.Context, apiClient API) error {
 		huh.NewGroup(
 			huh.NewSelect[databaseSelection]().
 				OptionsFunc(app.getDatabaseOptions, app.databaseSelections).
+				Validate(func(s databaseSelection) error {
+					if !postgres.HasCredentials(s.Instance.Name) {
+						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+					}
+					return nil
+				}).
 				Value(&app.sourceSelection).
 				Title("Please select the source database").
 				Height(5),
@@ -399,7 +421,14 @@ func Execute(ctx context.Context, apiClient API) error {
 		destForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[databaseSelection]().
-					OptionsFunc(app.getDatabaseOptions, app.databaseSelections).
+					OptionsFunc(app.getDestinationDatabaseOptions, app.databaseSelections).
+					Validate(func(s databaseSelection) error {
+						if !postgres.HasCredentials(s.Instance.Name) {
+							hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+							return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+						}
+						return nil
+					}).
 					Value(&app.destSelection).
 					Title("Please select the destination database to restore into").
 					Description(app.selectedDBHeader()).
@@ -795,7 +824,26 @@ func (a *appForm) preloadResources(ctx context.Context) error {
 func (a *appForm) getDatabaseOptions() []huh.Option[databaseSelection] {
 	options := make([]huh.Option[databaseSelection], len(a.databaseSelections))
 	for i, selection := range a.databaseSelections {
+		hasCreds := postgres.HasCredentials(selection.Instance.Name)
 		label := fmt.Sprintf("%s / %s", selection.Instance.Name, selection.Database.Name)
+		if !hasCreds {
+			hint := postgres.GetMissingCredentialsHint(selection.Instance.Name)
+			label = fmt.Sprintf("%s / %s (unavailable: missing %s)", selection.Instance.Name, selection.Database.Name, hint)
+		}
+		options[i] = huh.NewOption(label, selection)
+	}
+	return options
+}
+
+func (a *appForm) getDestinationDatabaseOptions() []huh.Option[databaseSelection] {
+	options := make([]huh.Option[databaseSelection], len(a.databaseSelections))
+	for i, selection := range a.databaseSelections {
+		hasCreds := postgres.HasCredentials(selection.Instance.Name)
+		label := fmt.Sprintf("%s / %s", selection.Instance.Name, selection.Database.Name)
+		if !hasCreds {
+			hint := postgres.GetMissingCredentialsHint(selection.Instance.Name)
+			label = fmt.Sprintf("%s / %s (unavailable: missing %s)", selection.Instance.Name, selection.Database.Name, hint)
+		}
 		options[i] = huh.NewOption(label, selection)
 	}
 	return options

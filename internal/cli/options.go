@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/api"
+	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
 )
 
 type Options struct {
@@ -37,12 +38,12 @@ func ParseOptions(args []string) (Options, error) {
 	var opts Options
 
 	fs.StringVar(&opts.Action, "action", "", "Operation action: 'dump' or 'restore'")
-	fs.StringVar(&opts.Instance, "instance", "", "Source STACKIT PostgreSQL instance ID or Name")
-	fs.StringVar(&opts.Instance, "source-instance", "", "Source STACKIT PostgreSQL instance ID or Name (alias)")
+	fs.StringVar(&opts.Instance, "instance", "", "Source STACKIT PostgreSQL instance ID/Name or 'local'")
+	fs.StringVar(&opts.Instance, "source-instance", "", "Source STACKIT PostgreSQL instance ID/Name or 'local' (alias)")
 	fs.StringVar(&opts.Database, "database", "", "Source database name")
 	fs.StringVar(&opts.Database, "source-database", "", "Source database name (alias)")
-	fs.StringVar(&opts.TargetInstance, "target-instance", "", "Destination STACKIT PostgreSQL instance ID or Name")
-	fs.StringVar(&opts.TargetInstance, "dest-instance", "", "Destination STACKIT PostgreSQL instance ID or Name (alias)")
+	fs.StringVar(&opts.TargetInstance, "target-instance", "", "Destination PostgreSQL instance ID/Name or 'local'")
+	fs.StringVar(&opts.TargetInstance, "dest-instance", "", "Destination PostgreSQL instance ID/Name or 'local' (alias)")
 	fs.StringVar(&opts.TargetDatabase, "target-database", "", "Destination database name")
 	fs.StringVar(&opts.TargetDatabase, "dest-database", "", "Destination database name (alias)")
 	fs.StringVar(&opts.Mode, "mode", "", "Dump mode ('live', 'replica', 'pit') or Restore mode ('live_db', 'stackit_backup', 'pit', 'dump_file')")
@@ -114,6 +115,18 @@ func (o *Options) Validate() error {
 
 	modeLower := strings.ToLower(strings.TrimSpace(o.Mode))
 
+	if !postgres.HasCredentials(o.Instance) {
+		hint := postgres.GetMissingCredentialsHint(o.Instance)
+		return fmt.Errorf("source instance %q is unavailable: missing %s in environment", o.Instance, hint)
+	}
+
+	if o.Action == string(actionRestore) {
+		if !postgres.HasCredentials(o.TargetInstance) {
+			hint := postgres.GetMissingCredentialsHint(o.TargetInstance)
+			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", o.TargetInstance, hint)
+		}
+	}
+
 	switch action(o.Action) {
 	case actionDump:
 		switch modeLower {
@@ -121,8 +134,14 @@ func (o *Options) Validate() error {
 			o.Mode = string(api.DumpModeStandard)
 		case "replica", string(api.DumpModeReplica):
 			o.Mode = string(api.DumpModeReplica)
+			if strings.EqualFold(o.Instance, "local") {
+				return fmt.Errorf("dump mode 'replica' is not supported when instance is 'local'")
+			}
 		case "pit", string(api.DumpModePointInTime):
 			o.Mode = string(api.DumpModePointInTime)
+			if strings.EqualFold(o.Instance, "local") {
+				return fmt.Errorf("dump mode 'pit' is not supported when instance is 'local'")
+			}
 			if strings.TrimSpace(o.PITRaw) == "" {
 				return fmt.Errorf("--pit datetime string is required when dump mode is 'pit'")
 			}
@@ -146,11 +165,17 @@ func (o *Options) Validate() error {
 			}
 		case "backup", "stackit_backup", string(restoreFromStackitBackup):
 			o.Mode = string(restoreFromStackitBackup)
+			if strings.EqualFold(o.Instance, "local") {
+				return fmt.Errorf("restore mode 'stackit_backup' is not supported when source instance is 'local'")
+			}
 			if strings.TrimSpace(o.Backup) == "" {
 				return fmt.Errorf("--backup name is required when restore mode is 'stackit_backup'")
 			}
 		case "pit", string(restoreFromPIT):
 			o.Mode = string(restoreFromPIT)
+			if strings.EqualFold(o.Instance, "local") {
+				return fmt.Errorf("restore mode 'pit' is not supported when source instance is 'local'")
+			}
 			if strings.TrimSpace(o.PITRaw) == "" {
 				return fmt.Errorf("--pit datetime string is required when restore mode is 'pit'")
 			}
@@ -177,9 +202,9 @@ Usage:
 Global Flags:
   -h, --help                 Show this help screen and usage examples
   --action string            Operation to perform: 'dump' or 'restore'
-  --instance string          Source STACKIT PostgreSQL instance ID or Name (alias: --source-instance)
+  --instance string          Source STACKIT PostgreSQL instance ID/Name or 'local' (alias: --source-instance)
   --database string          Source database name (alias: --source-database)
-  --target-instance string   Destination STACKIT PostgreSQL instance ID or Name (alias: --dest-instance, defaults to --instance)
+  --target-instance string   Destination PostgreSQL instance ID/Name or 'local' (alias: --dest-instance, defaults to --instance)
   --target-database string   Destination database name (alias: --dest-database, defaults to --database)
   --mode string              Dump mode ('live', 'replica', 'pit') or Restore mode ('live_db', 'stackit_backup', 'pit', 'dump_file')
   --pit string               Point-in-time datetime string (e.g. '2026-08-13 15:00:00' or RFC3339)
@@ -191,32 +216,35 @@ Global Flags:
   --non-interactive          Force single-line non-interactive mode
 
 Environment Variables:
-  STACKIT_PROJECT_ID                  STACKIT Project ID (required)
-  STACKIT_REGION                      STACKIT Region (required)
-  STACKIT_SERVICE_ACCOUNT_KEY_PATH    Path to STACKIT Service Account Key JSON file (KeyAuth flow)
-  STACKIT_SERVICE_ACCOUNT_TOKEN       STACKIT Service Account Bearer Token (TokenAuth flow)
-  STACKIT_POSTGRES_USER               PostgreSQL username (or STACKIT_POSTGRES_USER_FILE)
-  STACKIT_POSTGRES_PASSWORD           PostgreSQL password (or STACKIT_POSTGRES_PASSWORD_FILE)
+  STACKIT_PROJECT_ID                  STACKIT Project ID (required for STACKIT operations)
+  STACKIT_REGION                      STACKIT Region (required for STACKIT operations)
+  STACKIT_SERVICE_ACCOUNT_KEY_PATH    Path to STACKIT Service Account Key JSON file (KeyAuth)
+  [INSTANCE_NAME]_USER                PostgreSQL username for specific instance (e.g. PRODUCTION_USER)
+  [INSTANCE_NAME]_PASS                PostgreSQL password for specific instance (e.g. PRODUCTION_PASS)
+  LOCAL_HOST                          Local PostgreSQL host (e.g. 'localhost' or '127.0.0.1')
+  LOCAL_PORT                          Local PostgreSQL port (e.g. '5432')
+  LOCAL_USER                          Local PostgreSQL username
+  LOCAL_PASS                          Local PostgreSQL password
   POSTGRES_DUMP_DIR                   Local directory to store dump artifacts (default: 'dumps')
 
 Single-Line Usage Examples:
   # Dump from live data directly using KeyAuth flow:
   stackit-restore --action=dump --instance=Production --database=app_prod --mode=live --sa-key-path=/etc/stackit/key.json
 
-  # Dump from a STACKIT replica at a specific Point-In-Time datetime:
-  stackit-restore --action=dump --instance=Production --database=app_prod --mode=pit --pit="2026-08-13 15:00:00"
+  # Dump from local database:
+  stackit-restore --action=dump --instance=local --database=app_local --mode=live
 
-  # Restore directly from a live source database into a destination database:
-  stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=live_db
+  # Restore directly from live source database into local destination database:
+  stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=local --target-database=app_local --mode=live_db
 
-  # Restore a STACKIT backup into a destination database:
-  stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=stackit_backup --backup=prod-auto-20260112
+  # Restore a STACKIT backup into local database:
+  stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=local --target-database=app_local --mode=stackit_backup --backup=prod-auto-20260112
 
-  # Restore from a STACKIT replica at Point-In-Time datetime:
-  stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=pit --pit="2026-08-13 15:00:00"
+  # Restore from local database into local destination database:
+  stackit-restore --action=restore --instance=local --database=app_dev --target-instance=local --target-database=app_test --mode=live_db
 
-  # Restore a database from a local .dump file:
-  stackit-restore --action=restore --instance=Staging --database=app_stg --mode=dump_file --dump-file=/tmp/dumps/dump.dump
+  # Restore from a .dump file into local database:
+  stackit-restore --action=restore --instance=local --database=app_local --mode=dump_file --dump-file=/tmp/dumps/dump.dump
 `
 	fmt.Fprint(w, helpText)
 }

@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/GrigoreAlexandru/stackit-restore)](https://github.com/GrigoreAlexandru/stackit-restore/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-An interactive Go CLI tool for PostgreSQL dump and restore workflows on [STACKIT](https://www.stackit.cloud/) PostgreSQL Flex. Supports arrow-key guided TUI navigation, Point-In-Time (PIT) snapshot creation, custom binary `.dump` format, cross-database restoration, and single-line non-interactive CLI commands.
+An interactive Go CLI tool for PostgreSQL dump and restore workflows across [STACKIT](https://www.stackit.cloud/) PostgreSQL Flex cloud instances and local database instances. Supports arrow-key guided TUI navigation, Point-In-Time (PIT) snapshot creation, custom binary `.dump` format, dynamic per-instance credential resolution, and single-line non-interactive CLI commands.
 
 ---
 
@@ -12,7 +12,12 @@ An interactive Go CLI tool for PostgreSQL dump and restore workflows on [STACKIT
 
 - **Guided Interactive TUI**: Arrow-key terminal forms built with [charmbracelet/huh](https://github.com/charmbracelet/huh).
 - **Single-Line CLI Flags**: Non-interactive command options for scripts, automation, and CI/CD pipelines.
-- **Source & Destination Database Choices**: Restore from a production database directly into a staging or development database.
+- **Dynamic DSN & Host Construction**:
+  - STACKIT host: `[instance-id].postgresql.[region].onstackit.cloud` (port `5432`).
+  - Local host: `LOCAL_HOST` and `LOCAL_PORT`.
+- **Dynamic Per-Instance Credentials**: Credentials resolved dynamically from environment variables formatted as `[INSTANCE_NAME]_USER` and `[INSTANCE_NAME]_PASS` (e.g. `PRODUCTION_USER` & `PRODUCTION_PASS`).
+- **Credential-Based Availability**: Any instance can be used as source or destination as long as credentials are configured for it. Unconfigured instances are visible in the TUI menu but marked as `(unavailable: missing <NAME>_USER and <NAME>_PASS)`.
+- **Local Database Support**: `local` is available as a first-class source and destination option using `LOCAL_USER` and `LOCAL_PASS`.
 - **STACKIT Replica & PIT Cloning**: Clone PostgreSQL instances from backups or specific Point-In-Time (PIT) timestamps before dumping.
 - **Custom Binary `.dump` & `pg_restore`**: Custom binary dump format (`pg_dump -Fc`) restored with `pg_restore` for max performance and safety (`--clean`, `--if-exists`, `--no-owner`, `--no-privileges`).
 - **Confirmation & Explanation**: Plain-English execution plan presented prior to executing actions.
@@ -46,7 +51,7 @@ go build -o stackit-restore ./cmd/stackit-restore
 ## Prerequisites
 
 - **PostgreSQL Client Tools**: `pg_dump` and `pg_restore` (part of `postgresql-client` package) must be installed and available in your `PATH`.
-- **STACKIT Account & Service Account Token**: A STACKIT Service Account Bearer Token with PostgreSQL Flex permissions.
+- **STACKIT Service Account Key JSON**: Service account key with PostgreSQL Flex permissions (if managing STACKIT instances).
 
 ---
 
@@ -55,21 +60,22 @@ go build -o stackit-restore ./cmd/stackit-restore
 Create a `.env` file or export environment variables:
 
 ```bash
-# STACKIT Authentication & Region (Required)
+# STACKIT Authentication & Region (Required for STACKIT instances)
 STACKIT_PROJECT_ID=your-stackit-project-id
 STACKIT_REGION=eu01
-
-# Option A: Service Account Key JSON File (Recommended KeyAuth Flow)
 STACKIT_SERVICE_ACCOUNT_KEY_PATH=/path/to/service_account_key.json
 
-# Option B: Service Account Bearer Token (TokenAuth Flow)
-# STACKIT_SERVICE_ACCOUNT_TOKEN=your-service-account-bearer-token
-# STACKIT_SERVICE_ACCOUNT_TOKEN_FILE=/path/to/token.txt
+# Dynamic Per-Instance PostgreSQL Credentials ([INSTANCE_NAME]_USER and [INSTANCE_NAME]_PASS)
+PRODUCTION_USER=prod_admin
+PRODUCTION_PASS=prod_secret_pass
+STAGING_USER=stg_admin
+STAGING_PASS=stg_secret_pass
 
-# PostgreSQL Credentials
-STACKIT_POSTGRES_USER=postgres
-STACKIT_POSTGRES_PASSWORD=your-postgres-password
-STACKIT_POSTGRES_SSLMODE=require
+# Local Database Configuration
+LOCAL_HOST=localhost
+LOCAL_PORT=5432
+LOCAL_USER=postgres
+LOCAL_PASS=postgres_secret
 
 # Local Dump Directory (Default: dumps)
 POSTGRES_DUMP_DIR=dumps
@@ -85,18 +91,18 @@ Simply run the binary without arguments to launch the guided arrow-key menu:
 stackit-restore
 ```
 
-1. Select **Source Database** (`Instance / Database`).
+1. Select **Source Database** (`Instance / Database` or `local / <database>`).
 2. Select **Action**: `Dump` or `Restore`.
-3. If `Restore`: Select **Destination Database** to restore into.
+3. If `Restore`: Select **Destination Database** to restore into (restricted to source instance itself or `local`).
 4. Select **Dump Mode** or **Restore Mode**:
    - **Dump Modes**:
      - *Dump from live data*
-     - *Dump from stackit replica*
-     - *Dump from stackit replica (PIT)*
+     - *Dump from stackit replica* (STACKIT instances only)
+     - *Dump from stackit replica (PIT)* (STACKIT instances only)
    - **Restore Modes**:
      - *Restore from live db*
-     - *Restore from Stackit backup*
-     - *Restore from Stackit replica (PIT)*
+     - *Restore from Stackit backup* (STACKIT instances only)
+     - *Restore from Stackit replica (PIT)* (STACKIT instances only)
      - *Restore from existing .dump file*
 5. Review the **Summary & Command Explanation** and confirm execution.
 
@@ -104,34 +110,39 @@ stackit-restore
 
 ### Single-Line Non-Interactive Mode
 
-#### 1. Dump from Live Database
+#### 1. Dump from Live STACKIT Database
 ```bash
 stackit-restore --action=dump --instance=Production --database=app_prod --mode=live
 ```
 
-#### 2. Dump from STACKIT Replica at Point-In-Time (PIT)
+#### 2. Dump from Local Database
+```bash
+stackit-restore --action=dump --instance=local --database=app_local --mode=live
+```
+
+#### 3. Dump from STACKIT Replica at Point-In-Time (PIT)
 ```bash
 stackit-restore --action=dump --instance=Production --database=app_prod --mode=pit --pit="2026-08-13 15:00:00"
 ```
 
-#### 3. Restore Directly from Live Source DB into Target DB
+#### 4. Restore Directly from Live STACKIT DB into Local Database
 ```bash
-stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=live_db
+stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=local --target-database=app_local --mode=live_db
 ```
 
-#### 4. Restore from STACKIT Backup into Target DB
+#### 5. Restore from STACKIT Backup into Local Database
 ```bash
-stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=stackit_backup --backup=prod-auto-20260112
+stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=local --target-database=app_local --mode=stackit_backup --backup=prod-auto-20260112
 ```
 
-#### 5. Restore from STACKIT Replica at PIT Datetime into Target DB
+#### 6. Restore from Local Database into Local Destination Database
 ```bash
-stackit-restore --action=restore --instance=Production --database=app_prod --target-instance=Staging --target-database=app_stg --mode=pit --pit="2026-08-13 15:00:00"
+stackit-restore --action=restore --instance=local --database=app_dev --target-instance=local --target-database=app_test --mode=live_db
 ```
 
-#### 6. Restore from Local `.dump` File into Target DB
+#### 7. Restore from Local `.dump` File into Local Database
 ```bash
-stackit-restore --action=restore --instance=Staging --database=app_stg --mode=dump_file --dump-file=/tmp/dumps/custom_dump.dump
+stackit-restore --action=restore --instance=local --database=app_local --mode=dump_file --dump-file=/tmp/dumps/custom_dump.dump
 ```
 
 ---
@@ -142,14 +153,15 @@ stackit-restore --action=restore --instance=Staging --database=app_stg --mode=du
 | --- | --- | --- |
 | `-h, --help` | Show help screen and usage examples | `false` |
 | `--action` | Operation to perform: `dump` or `restore` | `""` |
-| `--instance, --source-instance` | Source STACKIT PostgreSQL instance ID or Name | `""` |
+| `--instance, --source-instance` | Source STACKIT PostgreSQL instance ID/Name or `'local'` | `""` |
 | `--database, --source-database` | Source database name | `""` |
-| `--target-instance, --dest-instance` | Destination STACKIT PostgreSQL instance ID or Name | Source Instance |
+| `--target-instance, --dest-instance` | Destination PostgreSQL instance ID/Name (must be source instance or `'local'`) | Source Instance |
 | `--target-database, --dest-database` | Destination database name | Source Database |
 | `--mode` | Dump mode (`live`, `replica`, `pit`) or Restore mode (`live_db`, `stackit_backup`, `pit`, `dump_file`) | `""` |
 | `--pit` | Point-In-Time datetime string (`YYYY-MM-DD HH:MM:SS` or `RFC3339`) | `""` |
 | `--backup` | STACKIT backup name | `""` |
 | `--dump-file` | Path to local `.dump` file | `""` |
+| `--sa-key-path` | Path to STACKIT Service Account Key JSON file | `""` |
 
 ---
 

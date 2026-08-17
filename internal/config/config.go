@@ -11,9 +11,11 @@ type Config struct {
 	ProjectID             string
 	Region                string
 	ServiceAccountKeyPath string
-	ServiceAccountKey     string
-	PrivateKeyPath        string
-	ServiceAccountToken   string
+
+	LocalHost string
+	LocalPort int
+	LocalUser string
+	LocalPass string
 
 	OperationPollIntervalSeconds int
 	OperationTimeoutSeconds      int
@@ -24,10 +26,14 @@ const (
 	defaultPollInterval = 10
 	defaultTimeout      = 600
 	defaultDumpDir      = "dumps"
+	defaultLocalHost    = "localhost"
+	defaultLocalPort    = 5432
 )
 
 func Default() Config {
 	return Config{
+		LocalHost:                    defaultLocalHost,
+		LocalPort:                    defaultLocalPort,
 		OperationPollIntervalSeconds: defaultPollInterval,
 		OperationTimeoutSeconds:      defaultTimeout,
 		DumpDir:                      defaultDumpDir,
@@ -41,23 +47,18 @@ func Load() (Config, error) {
 
 	cfg.ProjectID = os.Getenv("STACKIT_PROJECT_ID")
 	cfg.Region = os.Getenv("STACKIT_REGION")
+	cfg.ServiceAccountKeyPath = os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH")
 
-	cfg.ServiceAccountKeyPath = firstNonEmpty(
-		os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH"),
-		os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH_FILE"),
-		os.Getenv("STACKIT_CREDENTIALS_PATH"),
-	)
-	cfg.ServiceAccountKey = os.Getenv("STACKIT_SERVICE_ACCOUNT_KEY")
-	cfg.PrivateKeyPath = firstNonEmpty(
-		os.Getenv("STACKIT_PRIVATE_KEY_PATH"),
-		os.Getenv("STACKIT_PRIVATE_KEY"),
-	)
-	cfg.ServiceAccountToken = firstNonEmpty(
-		os.Getenv("STACKIT_SERVICE_ACCOUNT_TOKEN"),
-		os.Getenv("STACKIT_TOKEN"),
-		os.Getenv("STACKIT_SA_TOKEN"),
-		readSecretFromFile(os.Getenv("STACKIT_SERVICE_ACCOUNT_TOKEN_FILE")),
-	)
+	if host := os.Getenv("LOCAL_HOST"); host != "" {
+		cfg.LocalHost = host
+	}
+	if portStr := os.Getenv("LOCAL_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+			cfg.LocalPort = p
+		}
+	}
+	cfg.LocalUser = os.Getenv("LOCAL_USER")
+	cfg.LocalPass = os.Getenv("LOCAL_PASS")
 
 	if value := os.Getenv("STACKIT_OPERATION_POLL_INTERVAL_SECONDS"); value != "" {
 		interval, err := strconv.Atoi(value)
@@ -105,8 +106,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("STACKIT_REGION is required")
 	}
 
-	if !c.HasAuth() {
-		return fmt.Errorf("STACKIT authentication is required: set STACKIT_SERVICE_ACCOUNT_KEY_PATH, STACKIT_SERVICE_ACCOUNT_KEY, or STACKIT_SERVICE_ACCOUNT_TOKEN")
+	if strings.TrimSpace(c.ServiceAccountKeyPath) == "" {
+		return fmt.Errorf("STACKIT_SERVICE_ACCOUNT_KEY_PATH is required")
 	}
 
 	if c.OperationPollIntervalSeconds <= 0 {
@@ -129,40 +130,7 @@ func (c Config) Validate() error {
 }
 
 func (c Config) HasAuth() bool {
-	if strings.TrimSpace(c.ServiceAccountKeyPath) != "" ||
-		strings.TrimSpace(c.ServiceAccountKey) != "" ||
-		strings.TrimSpace(c.PrivateKeyPath) != "" ||
-		strings.TrimSpace(c.ServiceAccountToken) != "" {
-		return true
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		credPath := home + "/.stackit/credentials.json"
-		if _, err := os.Stat(credPath); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func readSecretFromFile(filePath string) string {
-	filePath = strings.TrimSpace(filePath)
-	if filePath == "" {
-		return ""
-	}
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
+	return strings.TrimSpace(c.ServiceAccountKeyPath) != ""
 }
 
 func loadDotEnv(filename string) {
