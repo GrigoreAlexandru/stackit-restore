@@ -12,6 +12,7 @@ import (
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/api"
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
+	"github.com/GrigoreAlexandru/Stackit-Restore/internal/stackit"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
@@ -295,12 +296,25 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
+				deleteForbidden := false
 				if err != nil {
-					reporter.FailStep(0, err)
-					return err
+					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+						deleteForbidden = true
+					} else {
+						reporter.FailStep(0, err)
+						return err
+					}
 				}
-				for i := range steps {
-					reporter.CompleteStep(i)
+				if mode == api.DumpModeStandard {
+					reporter.CompleteStep(0)
+				} else {
+					reporter.CompleteStep(0)
+					reporter.CompleteStep(1)
+					if deleteForbidden {
+						reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+					} else {
+						reporter.CompleteStep(2)
+					}
 				}
 				artifact = dump
 				return nil
@@ -415,20 +429,35 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				contextDetails,
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
-					dump, err := apiClient.RestoreFromPIT(execCtx, dstInst, dstDB, targetBackup.CreatedAt)
-					if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
-						reporter.FailStep(0, err)
+					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModeReplica, &targetBackup.CreatedAt)
+					deleteForbidden := false
+					if err != nil {
+						if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+							deleteForbidden = true
+						} else {
+							reporter.FailStep(0, err)
+							return err
+						}
+					}
+					reporter.CompleteStep(0)
+					reporter.CompleteStep(1)
+					if deleteForbidden {
+						reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+					} else {
+						reporter.CompleteStep(2)
+					}
+
+					reporter.StartStep(3)
+					if err := apiClient.RestoreDump(execCtx, dstInst, dstDB, dump); err != nil {
+						if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+							reporter.CompleteStepWithWarning(3, "non-critical extension/role warnings ignored")
+							artifact = dump
+							return nil
+						}
+						reporter.FailStep(3, err)
 						return err
 					}
-					for i := 0; i < len(steps)-1; i++ {
-						reporter.CompleteStep(i)
-					}
-					lastStepIdx := len(steps) - 1
-					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
-						reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
-					} else {
-						reporter.CompleteStep(lastStepIdx)
-					}
+					reporter.CompleteStep(3)
 					artifact = dump
 					return nil
 				},
@@ -470,20 +499,35 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				contextDetails,
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
-					dump, err := apiClient.RestoreFromPIT(execCtx, dstInst, dstDB, *opts.PITParsed)
-					if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
-						reporter.FailStep(0, err)
+					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModePointInTime, opts.PITParsed)
+					deleteForbidden := false
+					if err != nil {
+						if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+							deleteForbidden = true
+						} else {
+							reporter.FailStep(0, err)
+							return err
+						}
+					}
+					reporter.CompleteStep(0)
+					reporter.CompleteStep(1)
+					if deleteForbidden {
+						reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+					} else {
+						reporter.CompleteStep(2)
+					}
+
+					reporter.StartStep(3)
+					if err := apiClient.RestoreDump(execCtx, dstInst, dstDB, dump); err != nil {
+						if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+							reporter.CompleteStepWithWarning(3, "non-critical extension/role warnings ignored")
+							artifact = dump
+							return nil
+						}
+						reporter.FailStep(3, err)
 						return err
 					}
-					for i := 0; i < len(steps)-1; i++ {
-						reporter.CompleteStep(i)
-					}
-					lastStepIdx := len(steps) - 1
-					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
-						reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
-					} else {
-						reporter.CompleteStep(lastStepIdx)
-					}
+					reporter.CompleteStep(3)
 					artifact = dump
 					return nil
 				},
@@ -578,9 +622,14 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
+				deleteForbidden := false
 				if err != nil {
-					reporter.FailStep(0, err)
-					return err
+					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+						deleteForbidden = true
+					} else {
+						reporter.FailStep(0, err)
+						return err
+					}
 				}
 
 				if mode == api.DumpModeStandard {
@@ -588,7 +637,11 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				} else {
 					reporter.CompleteStep(0)
 					reporter.CompleteStep(1)
-					reporter.CompleteStep(2)
+					if deleteForbidden {
+						reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+					} else {
+						reporter.CompleteStep(2)
+					}
 				}
 
 				restoreStepIdx := len(steps) - 1
@@ -788,13 +841,26 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 				a.selectedDumpMode,
 				pit,
 			)
+			deleteForbidden := false
 			if err != nil {
-				reporter.FailStep(0, err)
-				return err
+				if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+					deleteForbidden = true
+				} else {
+					reporter.FailStep(0, err)
+					return err
+				}
 			}
 
-			for i := range steps {
-				reporter.CompleteStep(i)
+			if a.selectedDumpMode == api.DumpModeStandard {
+				reporter.CompleteStep(0)
+			} else {
+				reporter.CompleteStep(0)
+				reporter.CompleteStep(1)
+				if deleteForbidden {
+					reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+				} else {
+					reporter.CompleteStep(2)
+				}
 			}
 			artifact = dump
 			return nil
@@ -956,55 +1022,54 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 				generatedDump = a.selectedDump
 				return nil
 
-			case restoreSourceCloudBackup:
-				contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
-				contextDetails["Backup"] = a.selectedBackup.Name
-				reporter.StartStep(0)
-				dump, err := a.apiClient.RestoreFromPIT(
-					execCtx,
-					a.destSelection.Instance,
-					a.destSelection.Database,
-					a.selectedBackup.CreatedAt,
-				)
-				if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
-					reporter.FailStep(0, err)
-					return err
-				}
-				for i := 0; i < len(steps)-1; i++ {
-					reporter.CompleteStep(i)
-				}
-				lastStepIdx := len(steps) - 1
-				if errors.Is(err, postgres.ErrRestoreWithWarnings) {
-					reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
+			case restoreSourceCloudBackup, restoreSourceCloudPIT:
+				pit := a.selectedPIT
+				if a.selectedRestoreSource == restoreSourceCloudBackup {
+					contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+					contextDetails["Backup"] = a.selectedBackup.Name
+					pit = a.selectedBackup.CreatedAt
 				} else {
-					reporter.CompleteStep(lastStepIdx)
+					contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+					contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
 				}
-				generatedDump = dump
-				return nil
 
-			case restoreSourceCloudPIT:
-				contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
-				contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
 				reporter.StartStep(0)
-				dump, err := a.apiClient.RestoreFromPIT(
+				dump, err := a.apiClient.CreateDump(
 					execCtx,
-					a.destSelection.Instance,
+					a.selectedCloudInstance,
 					a.destSelection.Database,
-					a.selectedPIT,
+					api.DumpModePointInTime,
+					&pit,
 				)
-				if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
-					reporter.FailStep(0, err)
+				deleteForbidden := false
+				if err != nil {
+					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+						deleteForbidden = true
+					} else {
+						reporter.FailStep(0, err)
+						return err
+					}
+				}
+
+				reporter.CompleteStep(0)
+				reporter.CompleteStep(1)
+				if deleteForbidden {
+					reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+				} else {
+					reporter.CompleteStep(2)
+				}
+
+				reporter.StartStep(3)
+				if err := a.apiClient.RestoreDump(execCtx, a.destSelection.Instance, a.destSelection.Database, dump); err != nil {
+					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.CompleteStepWithWarning(3, "non-critical extension/role warnings ignored")
+						generatedDump = dump
+						return nil
+					}
+					reporter.FailStep(3, err)
 					return err
 				}
-				for i := 0; i < len(steps)-1; i++ {
-					reporter.CompleteStep(i)
-				}
-				lastStepIdx := len(steps) - 1
-				if errors.Is(err, postgres.ErrRestoreWithWarnings) {
-					reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
-				} else {
-					reporter.CompleteStep(lastStepIdx)
-				}
+				reporter.CompleteStep(3)
 				generatedDump = dump
 				return nil
 			}
@@ -1174,9 +1239,14 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 				a.selectedDumpMode,
 				pit,
 			)
+			deleteForbidden := false
 			if err != nil {
-				reporter.FailStep(0, err)
-				return err
+				if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+					deleteForbidden = true
+				} else {
+					reporter.FailStep(0, err)
+					return err
+				}
 			}
 
 			if a.selectedDumpMode == api.DumpModeStandard {
@@ -1184,7 +1254,11 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 			} else {
 				reporter.CompleteStep(0)
 				reporter.CompleteStep(1)
-				reporter.CompleteStep(2)
+				if deleteForbidden {
+					reporter.CompleteStepWithWarning(2, "instance could not be deleted due to permissions")
+				} else {
+					reporter.CompleteStep(2)
+				}
 			}
 
 			restoreStepIdx := len(steps) - 1

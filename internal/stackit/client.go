@@ -2,15 +2,35 @@ package stackit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/config"
 	sdkconfig "github.com/stackitcloud/stackit-sdk-go/core/config"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
 	postgresflex "github.com/stackitcloud/stackit-sdk-go/services/postgresflex/v3api"
 	"github.com/stackitcloud/stackit-sdk-go/services/postgresflex/v3api/wait"
 )
+
+var ErrDeleteInstanceForbidden = errors.New("instance could not be deleted due to permissions (403 Forbidden)")
+
+func IsDeleteForbidden(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrDeleteInstanceForbidden) {
+		return true
+	}
+	var oapiErr *oapierror.GenericOpenAPIError
+	if errors.As(err, &oapiErr) && oapiErr.StatusCode == 403 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "403") || strings.Contains(msg, "forbidden")
+}
 
 type Client struct {
 	api          *postgresflex.APIClient
@@ -170,7 +190,9 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 		sizeGB = 10
 	}
 
+	cloneName := formatTemporaryCloneName(instance.Name)
 	overrides := postgresflex.CloneInstanceOverrides{
+		Name: &cloneName,
 		Size: sizeGB,
 	}
 	if class != "" {
@@ -182,8 +204,8 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 		PointInTime:       pit,
 	}
 
-	c.logf("Initiating STACKIT clone from instance %q (ID: %s) at %s (Size: %d GB, Class: %s)...\n",
-		instance.Name, instance.ID, pit.Format(time.RFC3339), sizeGB, class)
+	c.logf("Initiating STACKIT clone %q from instance %q (ID: %s) at %s (Size: %d GB, Class: %s)...\n",
+		cloneName, instance.Name, instance.ID, pit.Format(time.RFC3339), sizeGB, class)
 	clone, err := c.api.DefaultAPI.CloneInstance(ctx, c.projectID, c.region, instance.ID).CloneInstancePayload(payload).Execute()
 	if err != nil {
 		return Instance{}, fmt.Errorf("create clone instance name %q: %w", instance.Name, err)
@@ -206,12 +228,20 @@ func (c *Client) DeleteInstance(ctx context.Context, instance Instance) error {
 	c.logf("Initiating deletion for temporary instance %q (ID: %s)...\n", instance.Name, instance.ID)
 	err := c.api.DefaultAPI.DeleteInstance(ctx, c.projectID, c.region, instance.ID).Execute()
 	if err != nil {
+		if IsDeleteForbidden(err) {
+			c.logf("Warning: Temporary instance %q (ID: %s) could not be deleted due to permissions (403 Forbidden). Please delete it manually in STACKIT portal.\n", instance.Name, instance.ID)
+			return ErrDeleteInstanceForbidden
+		}
 		return fmt.Errorf("delete instance %q: %w", instance.Name, err)
 	}
 
 	c.logf("Waiting for temporary instance %q deletion to complete...\n", instance.Name)
 	_, err = wait.DeleteInstanceWaitHandler(ctx, c.api.DefaultAPI, c.projectID, c.region, instance.ID).WaitWithContext(ctx)
 	if err != nil {
+		if IsDeleteForbidden(err) {
+			c.logf("Warning: Temporary instance %q (ID: %s) deletion check failed due to permissions (403 Forbidden).\n", instance.Name, instance.ID)
+			return ErrDeleteInstanceForbidden
+		}
 		return fmt.Errorf("wait for deletion of instance %q: %w", instance.Name, err)
 	}
 	c.logf("Temporary instance %q successfully deleted.\n", instance.Name)
@@ -235,3 +265,25 @@ func (c *Client) GetInstanceEndpoint(ctx context.Context, instance Instance) (st
 	}
 	return host, port, nil
 }
+
+func formatTemporaryCloneName(sourceName string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(sourceName) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	clean := strings.Trim(b.String(), "-")
+	if clean == "" {
+		clean = "source"
+	}
+	// Max length for STACKIT instance name is 63 chars.
+	// Suffix "-temp-clone-<timestamp>" is ~23 chars, so limit clean name to 38 chars.
+	if len(clean) > 38 {
+		clean = strings.TrimRight(clean[:38], "-")
+	}
+	return fmt.Sprintf("%s-temp-clone-%d", clean, time.Now().Unix())
+}
+

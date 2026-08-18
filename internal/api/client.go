@@ -26,7 +26,11 @@ const (
 
 type DumpArtifact = postgres.DumpArtifact
 
-var InstanceLocal = provider.LocalInstance
+var (
+	ErrDeleteInstanceForbidden = stackit.ErrDeleteInstanceForbidden
+	IsDeleteForbidden          = stackit.IsDeleteForbidden
+	InstanceLocal              = provider.LocalInstance
+)
 
 type Client struct {
 	router    *provider.Router
@@ -150,16 +154,19 @@ func (c *Client) CreateDump(
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
 
-		if dumpErr != nil && deleteErr != nil {
-			return DumpArtifact{}, errors.Join(
-				dumpErr,
-				fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
-			)
-		}
 		if dumpErr != nil {
+			if deleteErr != nil {
+				return DumpArtifact{}, errors.Join(
+					dumpErr,
+					fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
+				)
+			}
 			return DumpArtifact{}, dumpErr
 		}
 		if deleteErr != nil {
+			if stackit.IsDeleteForbidden(deleteErr) {
+				return dump, stackit.ErrDeleteInstanceForbidden
+			}
 			return DumpArtifact{}, fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr)
 		}
 
@@ -188,16 +195,19 @@ func (c *Client) CreateDump(
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
 
-		if dumpErr != nil && deleteErr != nil {
-			return DumpArtifact{}, errors.Join(
-				dumpErr,
-				fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
-			)
-		}
 		if dumpErr != nil {
+			if deleteErr != nil {
+				return DumpArtifact{}, errors.Join(
+					dumpErr,
+					fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
+				)
+			}
 			return DumpArtifact{}, dumpErr
 		}
 		if deleteErr != nil {
+			if stackit.IsDeleteForbidden(deleteErr) {
+				return dump, stackit.ErrDeleteInstanceForbidden
+			}
 			return DumpArtifact{}, fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr)
 		}
 
