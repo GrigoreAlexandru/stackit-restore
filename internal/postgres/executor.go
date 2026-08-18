@@ -138,6 +138,7 @@ func RunPgDump(
 		"--if-exists",
 		"--no-owner",
 		"--no-privileges",
+		"--verbose",
 	}
 
 	if err := runPostgresCommand(ctx, "pg_dump", args, creds); err != nil {
@@ -164,6 +165,7 @@ func RunPgRestore(
 		"--if-exists",
 		"--no-owner",
 		"--no-privileges",
+		"--verbose",
 		dumpPath,
 	}
 
@@ -180,20 +182,19 @@ func runPostgresCommand(
 	args []string,
 	credentials Credentials,
 ) error {
+	fmt.Printf("\n$ %s %s\n", command, strings.Join(args, " "))
+
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Env = append(os.Environ(),
 		"PGPASSWORD="+credentials.Password,
 		"PGSSLMODE="+credentials.SSLMode,
 	)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf(
-			"run %s: %w: %s",
-			command,
-			err,
-			strings.TrimSpace(string(output)),
-		)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run %s: %w", command, err)
 	}
 
 	return nil

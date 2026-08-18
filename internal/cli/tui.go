@@ -513,36 +513,29 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		return nil
 	}
 
-	var artifact api.DumpArtifact
-	err := spinner.New().
-		Context(ctx).
-		Accessible(false).
-		Title("Creating dump...").
-		ActionWithErr(func(ctx context.Context) error {
-			var pit *time.Time
-			if a.selectedDumpMode == api.DumpModePointInTime {
-				pit = &a.selectedPIT
-			}
+	fmt.Println("\n================================================================================")
+	fmt.Println("PostgreSQL Dump Execution")
+	fmt.Println("================================================================================")
 
-			dump, err := a.apiClient.CreateDump(
-				ctx,
-				a.sourceSelection.Instance,
-				a.sourceSelection.Database,
-				a.selectedDumpMode,
-				pit,
-			)
-			if err != nil {
-				return err
-			}
-			artifact = dump
-			return nil
-		}).
-		Run()
+	var pit *time.Time
+	if a.selectedDumpMode == api.DumpModePointInTime {
+		pit = &a.selectedPIT
+	}
+
+	artifact, err := a.apiClient.CreateDump(
+		ctx,
+		a.sourceSelection.Instance,
+		a.sourceSelection.Database,
+		a.selectedDumpMode,
+		pit,
+	)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Dump created for %s / %s: %s\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, artifact.Path)
+	fmt.Println("\n================================================================================")
+	fmt.Printf("Dump created successfully for %s / %s: %s\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, artifact.Path)
+	fmt.Println("================================================================================")
 	return nil
 }
 
@@ -641,72 +634,48 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		return nil
 	}
 
+	fmt.Println("\n================================================================================")
+	fmt.Println("PostgreSQL Restore Execution")
+	fmt.Println("================================================================================")
+
 	switch a.selectedRestoreSource {
 	case restoreSourceDumpFile:
-		err := spinner.New().
-			Context(ctx).
-			Accessible(false).
-			Title("Restoring dump file into database...").
-			ActionWithErr(func(ctx context.Context) error {
-				return a.apiClient.RestoreDump(ctx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump)
-			}).
-			Run()
-		if err != nil {
+		if err := a.apiClient.RestoreDump(ctx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump); err != nil {
 			return err
 		}
-		fmt.Printf("Restore completed from dump %s into %s / %s\n", a.selectedDump.Path, a.destSelection.Instance.Name, a.destSelection.Database.Name)
+		fmt.Println("\n================================================================================")
+		fmt.Printf("Restore completed successfully from dump %s into %s / %s\n", a.selectedDump.Path, a.destSelection.Instance.Name, a.destSelection.Database.Name)
+		fmt.Println("================================================================================")
 		return nil
 
 	case restoreSourceCloudBackup:
-		var generatedDump api.DumpArtifact
-		err := spinner.New().
-			Context(ctx).
-			Accessible(false).
-			Title("Extracting cloud backup and restoring into target database...").
-			ActionWithErr(func(ctx context.Context) error {
-				dump, err := a.apiClient.RestoreFromPIT(
-					ctx,
-					a.destSelection.Instance,
-					a.destSelection.Database,
-					a.selectedBackup.CreatedAt,
-				)
-				if err != nil {
-					return err
-				}
-				generatedDump = dump
-				return nil
-			}).
-			Run()
+		dump, err := a.apiClient.RestoreFromPIT(
+			ctx,
+			a.destSelection.Instance,
+			a.destSelection.Database,
+			a.selectedBackup.CreatedAt,
+		)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Restore from backup completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, generatedDump.Path)
+		fmt.Println("\n================================================================================")
+		fmt.Printf("Restore from backup completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
+		fmt.Println("================================================================================")
 		return nil
 
 	case restoreSourceCloudPIT:
-		var generatedDump api.DumpArtifact
-		err := spinner.New().
-			Context(ctx).
-			Accessible(false).
-			Title("Creating PIT clone and restoring into target database...").
-			ActionWithErr(func(ctx context.Context) error {
-				dump, err := a.apiClient.RestoreFromPIT(
-					ctx,
-					a.destSelection.Instance,
-					a.destSelection.Database,
-					a.selectedPIT,
-				)
-				if err != nil {
-					return err
-				}
-				generatedDump = dump
-				return nil
-			}).
-			Run()
+		dump, err := a.apiClient.RestoreFromPIT(
+			ctx,
+			a.destSelection.Instance,
+			a.destSelection.Database,
+			a.selectedPIT,
+		)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Restore from PIT completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, generatedDump.Path)
+		fmt.Println("\n================================================================================")
+		fmt.Printf("Restore from PIT completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
+		fmt.Println("================================================================================")
 		return nil
 	}
 
@@ -799,52 +768,47 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		return nil
 	}
 
-	var generatedDump api.DumpArtifact
-	err := spinner.New().
-		Context(ctx).
-		Accessible(false).
-		Title("Syncing database from source to destination...").
-		ActionWithErr(func(ctx context.Context) error {
-			var pit *time.Time
-			if a.selectedDumpMode == api.DumpModePointInTime {
-				pit = &a.selectedPIT
-			}
+	fmt.Println("\n================================================================================")
+	fmt.Println("PostgreSQL Database Sync Execution")
+	fmt.Println("================================================================================")
 
-			dump, err := a.apiClient.CreateDump(
-				ctx,
-				a.sourceSelection.Instance,
-				a.sourceSelection.Database,
-				a.selectedDumpMode,
-				pit,
-			)
-			if err != nil {
-				return fmt.Errorf("dump from source db: %w", err)
-			}
-			generatedDump = dump
-
-			if err := a.apiClient.RestoreDump(
-				ctx,
-				a.destSelection.Instance,
-				a.destSelection.Database,
-				dump,
-			); err != nil {
-				return fmt.Errorf("restore dump into destination db: %w", err)
-			}
-			return nil
-		}).
-		Run()
-	if err != nil {
-		return err
+	var pit *time.Time
+	if a.selectedDumpMode == api.DumpModePointInTime {
+		pit = &a.selectedPIT
 	}
 
+	fmt.Printf("\n[Phase 1/2] Extracting dump from source %s / %s...\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name)
+	dump, err := a.apiClient.CreateDump(
+		ctx,
+		a.sourceSelection.Instance,
+		a.sourceSelection.Database,
+		a.selectedDumpMode,
+		pit,
+	)
+	if err != nil {
+		return fmt.Errorf("dump from source db: %w", err)
+	}
+
+	fmt.Printf("\n[Phase 2/2] Restoring extracted dump into target database %s / %s...\n", a.destSelection.Instance.Name, a.destSelection.Database.Name)
+	if err := a.apiClient.RestoreDump(
+		ctx,
+		a.destSelection.Instance,
+		a.destSelection.Database,
+		dump,
+	); err != nil {
+		return fmt.Errorf("restore dump into destination db: %w", err)
+	}
+
+	fmt.Println("\n================================================================================")
 	fmt.Printf(
 		"Sync completed successfully from %s / %s into %s / %s using dump: %s\n",
 		a.sourceSelection.Instance.Name,
 		a.sourceSelection.Database.Name,
 		a.destSelection.Instance.Name,
 		a.destSelection.Database.Name,
-		generatedDump.Path,
+		dump.Path,
 	)
+	fmt.Println("================================================================================")
 	return nil
 }
 
