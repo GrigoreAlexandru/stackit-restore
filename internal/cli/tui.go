@@ -18,7 +18,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var unavailableStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+var (
+	unavailableStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dateHighlightStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+)
 
 type API interface {
 	GetInstances(ctx context.Context) ([]api.Instance, error)
@@ -1509,48 +1512,36 @@ func (a *appForm) loadDumpArtifacts(ctx context.Context) error {
 	return nil
 }
 
-type pitInputMethod string
-
-const (
-	pitMethodSelectBackup pitInputMethod = "select_backup"
-	pitMethodEnterCustom  pitInputMethod = "enter_custom"
-)
-
 func (a *appForm) promptPITTimestamp(inst api.Instance) error {
 	backups := a.backupsByInstance[inst.ID]
 
+	description := "Format: YYYY-MM-DD HH:MM:SS or RFC3339 (e.g. 2026-08-13 15:00:00)"
 	if len(backups) > 0 {
-		var method pitInputMethod
-		methodForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[pitInputMethod]().
-					Options(
-						huh.NewOption("Select from available backup datetimes", pitMethodSelectBackup),
-						huh.NewOption("Enter custom datetime", pitMethodEnterCustom),
-					).
-					Value(&method).
-					Title("How would you like to specify the Point-In-Time datetime?"),
-			),
-		)
-		if err := methodForm.Run(); err != nil {
-			return err
-		}
-
-		if method == pitMethodSelectBackup {
-			if err := a.selectBackupForInstance(inst); err != nil {
-				return err
+		oldest := backups[0].CreatedAt
+		newest := backups[0].CreatedAt
+		for _, b := range backups {
+			if b.CreatedAt.Before(oldest) {
+				oldest = b.CreatedAt
 			}
-			a.selectedPIT = a.selectedBackup.CreatedAt
-			return nil
+			if b.CreatedAt.After(newest) {
+				newest = b.CreatedAt
+			}
 		}
+		oldestStr := dateHighlightStyle.Render(oldest.Format(time.RFC3339))
+		newestStr := dateHighlightStyle.Render(newest.Format(time.RFC3339))
+		description = fmt.Sprintf(
+			"Available backups from: %s to %s\nFormat: YYYY-MM-DD HH:MM:SS or RFC3339 (e.g. 2026-08-13 15:00:00)",
+			oldestStr,
+			newestStr,
+		)
 	}
 
 	var rawInput string
-	customForm := huh.NewForm(
+	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Enter Point-In-Time datetime (UTC)").
-				Description("Format: YYYY-MM-DD HH:MM:SS or RFC3339 (e.g. 2026-08-13 15:00:00)").
+				Description(description).
 				Value(&rawInput).
 				Validate(func(val string) error {
 					_, err := ParsePITTimestamp(val)
@@ -1559,7 +1550,7 @@ func (a *appForm) promptPITTimestamp(inst api.Instance) error {
 		),
 	)
 
-	if err := customForm.Run(); err != nil {
+	if err := form.Run(); err != nil {
 		return err
 	}
 
