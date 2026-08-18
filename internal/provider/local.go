@@ -33,7 +33,13 @@ func NewLocalProvider(cfg config.Config) *LocalProvider {
 		port = 5432
 	}
 
-	defaultDB := os.Getenv("LOCAL_DATABASE")
+	defaultDB := cfg.LocalDB
+	if strings.TrimSpace(defaultDB) == "" {
+		defaultDB = os.Getenv("LOCAL_DB")
+	}
+	if strings.TrimSpace(defaultDB) == "" {
+		defaultDB = os.Getenv("LOCAL_DATABASE")
+	}
 	if strings.TrimSpace(defaultDB) == "" {
 		defaultDB = "postgres"
 	}
@@ -64,7 +70,9 @@ func (p *LocalProvider) GetDatabases(ctx context.Context, instance stackit.Insta
 	_ = instance
 
 	dbName := p.defaultDatabase
-	if envDB := os.Getenv("LOCAL_DATABASE"); strings.TrimSpace(envDB) != "" {
+	if envDB := os.Getenv("LOCAL_DB"); strings.TrimSpace(envDB) != "" {
+		dbName = envDB
+	} else if envDB := os.Getenv("LOCAL_DATABASE"); strings.TrimSpace(envDB) != "" {
 		dbName = envDB
 	}
 

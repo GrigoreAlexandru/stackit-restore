@@ -70,8 +70,8 @@ func TestParseOptions_SingleLineRestoreFromBackup(t *testing.T) {
 
 	args := []string{
 		"--action=restore",
-		"--instance=Staging",
-		"--database=app_stg",
+		"--target-instance=Staging",
+		"--target-database=app_stg",
 		"--mode=backup",
 		"--backup=stg-auto-20260112",
 	}
@@ -87,40 +87,70 @@ func TestParseOptions_SingleLineRestoreFromBackup(t *testing.T) {
 	if opts.Action != "restore" {
 		t.Errorf("expected action 'restore', got %q", opts.Action)
 	}
-	if opts.Mode != "restore_from_stackit_backup" {
-		t.Errorf("expected normalized mode 'restore_from_stackit_backup', got %q", opts.Mode)
+	if opts.Mode != RestoreModeBackup {
+		t.Errorf("expected normalized mode %q, got %q", RestoreModeBackup, opts.Mode)
 	}
 	if opts.Backup != "stg-auto-20260112" {
 		t.Errorf("expected backup 'stg-auto-20260112', got %q", opts.Backup)
 	}
 	if opts.TargetInstance != "Staging" {
-		t.Errorf("expected TargetInstance to default to 'Staging', got %q", opts.TargetInstance)
+		t.Errorf("expected TargetInstance 'Staging', got %q", opts.TargetInstance)
 	}
 	if opts.TargetDatabase != "app_stg" {
-		t.Errorf("expected TargetDatabase to default to 'app_stg', got %q", opts.TargetDatabase)
+		t.Errorf("expected TargetDatabase 'app_stg', got %q", opts.TargetDatabase)
 	}
 }
 
-func TestParseOptions_TargetInstanceCrossCloudAllowedWithCredentials(t *testing.T) {
+func TestParseOptions_SingleLineRestoreFromDumpFile(t *testing.T) {
+	t.Setenv("LOCAL_USER", "loc_user")
+	t.Setenv("LOCAL_PASS", "loc_pass")
+
+	args := []string{
+		"--action=restore",
+		"--target-instance=local",
+		"--target-database=app_local",
+		"--dump-file=dumps/custom.dump",
+	}
+
+	opts, err := ParseOptions(args)
+	if err != nil {
+		t.Fatalf("unexpected error parsing restore dump file: %v", err)
+	}
+
+	if opts.Action != "restore" {
+		t.Errorf("expected action 'restore', got %q", opts.Action)
+	}
+	if opts.Mode != RestoreModeDumpFile {
+		t.Errorf("expected normalized mode %q, got %q", RestoreModeDumpFile, opts.Mode)
+	}
+	if opts.DumpFile != "dumps/custom.dump" {
+		t.Errorf("expected dump file 'dumps/custom.dump', got %q", opts.DumpFile)
+	}
+}
+
+func TestParseOptions_SingleLineSync(t *testing.T) {
 	t.Setenv("PRODUCTION_USER", "prod_user")
 	t.Setenv("PRODUCTION_PASS", "prod_pass")
 	t.Setenv("STAGING_USER", "stg_user")
 	t.Setenv("STAGING_PASS", "stg_pass")
 
 	args := []string{
-		"--action=restore",
+		"--action=sync",
 		"--instance=Production",
 		"--database=app_prod",
 		"--target-instance=Staging",
 		"--target-database=app_stg",
-		"--mode=live_db",
+		"--mode=live",
 	}
 
 	opts, err := ParseOptions(args)
 	if err != nil {
-		t.Fatalf("unexpected error parsing target options with Staging target: %v", err)
+		t.Fatalf("unexpected error parsing sync options: %v", err)
 	}
 
+	if opts.Action != "sync" {
+		t.Errorf("expected action 'sync', got %q", opts.Action)
+	}
 	if opts.Instance != "Production" || opts.Database != "app_prod" {
 		t.Errorf("expected source Production/app_prod, got %s/%s", opts.Instance, opts.Database)
 	}
@@ -129,26 +159,59 @@ func TestParseOptions_TargetInstanceCrossCloudAllowedWithCredentials(t *testing.
 	}
 }
 
-func TestParseOptions_LocalSourceToLocalTarget(t *testing.T) {
+func TestParseOptions_ActionAliases(t *testing.T) {
+	t.Setenv("PRODUCTION_USER", "prod_user")
+	t.Setenv("PRODUCTION_PASS", "prod_pass")
 	t.Setenv("LOCAL_USER", "loc_user")
 	t.Setenv("LOCAL_PASS", "loc_pass")
 
-	args := []string{
-		"--action=restore",
-		"--instance=local",
-		"--database=app_source",
-		"--target-instance=local",
-		"--target-database=app_dest",
-		"--mode=live_db",
+	// Export -> dump
+	opts, err := ParseOptions([]string{"--action=export", "--instance=Production", "--database=app_prod"})
+	if err != nil || opts.Action != "dump" {
+		t.Fatalf("expected action 'dump' from export, got %q, err: %v", opts.Action, err)
 	}
 
-	opts, err := ParseOptions(args)
-	if err != nil {
-		t.Fatalf("unexpected error parsing local to local restore: %v", err)
+	// Import -> restore
+	opts, err = ParseOptions([]string{"--action=import", "--target-instance=local", "--target-database=app_local", "--dump-file=dumps/test.dump"})
+	if err != nil || opts.Action != "restore" {
+		t.Fatalf("expected action 'restore' from import, got %q, err: %v", opts.Action, err)
 	}
 
-	if opts.Instance != "local" || opts.TargetInstance != "local" {
-		t.Errorf("expected local to local, got %s -> %s", opts.Instance, opts.TargetInstance)
+	// Copy -> sync
+	opts, err = ParseOptions([]string{"--action=copy", "--instance=Production", "--database=app_prod", "--target-instance=local", "--target-database=app_local"})
+	if err != nil || opts.Action != "sync" {
+		t.Fatalf("expected action 'sync' from copy, got %q, err: %v", opts.Action, err)
+	}
+}
+
+func TestParseOptions_LocalCapabilitiesValidation(t *testing.T) {
+	t.Setenv("LOCAL_USER", "loc_user")
+	t.Setenv("LOCAL_PASS", "loc_pass")
+
+	// Dump replica on local rejected
+	_, err := ParseOptions([]string{"--action=dump", "--instance=local", "--database=app_local", "--mode=replica"})
+	if err == nil {
+		t.Fatal("expected validation error for dump replica on local")
+	}
+
+	// Dump PIT on local rejected
+	_, err = ParseOptions([]string{"--action=dump", "--instance=local", "--database=app_local", "--mode=pit", "--pit=2026-08-13 15:00:00"})
+	if err == nil {
+		t.Fatal("expected validation error for dump PIT on local")
+	}
+
+	// Sync replica from local rejected
+	t.Setenv("PRODUCTION_USER", "prod_user")
+	t.Setenv("PRODUCTION_PASS", "prod_pass")
+	_, err = ParseOptions([]string{"--action=sync", "--instance=local", "--database=app_local", "--target-instance=Production", "--target-database=app_prod", "--mode=replica"})
+	if err == nil {
+		t.Fatal("expected validation error for sync replica from local")
+	}
+
+	// Restore from backup on local source rejected
+	_, err = ParseOptions([]string{"--action=restore", "--instance=local", "--target-instance=local", "--target-database=app_local", "--mode=backup", "--backup=backup-1"})
+	if err == nil {
+		t.Fatal("expected validation error for restore from backup on local")
 	}
 }
 
@@ -157,19 +220,13 @@ func TestParseOptions_ValidationErrors(t *testing.T) {
 	t.Setenv("PRODUCTION_PASS", "prod_pass")
 	t.Setenv("STAGING_USER", "stg_user")
 	t.Setenv("STAGING_PASS", "stg_pass")
-	t.Setenv("UNCONFIGURED_USER", "")
-	t.Setenv("UNCONFIGURED_PASS", "")
 
 	invalidCases := []struct {
 		name string
 		args []string
 	}{
 		{
-			name: "missing instance",
-			args: []string{"--action=dump", "--database=app_prod"},
-		},
-		{
-			name: "missing database",
+			name: "missing database for dump",
 			args: []string{"--action=dump", "--instance=Production"},
 		},
 		{
@@ -177,20 +234,16 @@ func TestParseOptions_ValidationErrors(t *testing.T) {
 			args: []string{"--action=dump", "--instance=Production", "--database=app_prod", "--mode=pit"},
 		},
 		{
-			name: "missing credentials for source instance",
-			args: []string{"--action=dump", "--instance=Unconfigured", "--database=app_prod", "--mode=live"},
+			name: "missing credentials for dump",
+			args: []string{"--action=dump", "--instance=Unconfigured", "--database=app_prod"},
 		},
 		{
-			name: "missing credentials for destination instance",
-			args: []string{"--action=restore", "--instance=Production", "--database=app_prod", "--target-instance=Unconfigured", "--target-database=app_dest", "--mode=live_db"},
+			name: "missing dump-file for restore",
+			args: []string{"--action=restore", "--target-instance=Staging", "--target-database=app_stg", "--mode=dump_file"},
 		},
 		{
-			name: "missing backup name for backup restore mode",
-			args: []string{"--action=restore", "--instance=Staging", "--database=app_stg", "--mode=backup"},
-		},
-		{
-			name: "missing dump file path for dump_file restore mode",
-			args: []string{"--action=restore", "--instance=Staging", "--database=app_stg", "--mode=dump_file"},
+			name: "missing backup name for restore backup",
+			args: []string{"--action=restore", "--instance=Production", "--target-instance=Staging", "--target-database=app_stg", "--mode=backup"},
 		},
 	}
 

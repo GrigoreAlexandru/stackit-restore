@@ -29,6 +29,9 @@ func TestLoadUsesDefaultsAndValidatesRequiredValues(t *testing.T) {
 	if cfg.LocalPort != 5432 {
 		t.Fatalf("expected default local port 5432, got %d", cfg.LocalPort)
 	}
+	if cfg.LocalDB != "postgres" {
+		t.Fatalf("expected default local db postgres, got %q", cfg.LocalDB)
+	}
 	if cfg.OperationPollIntervalSeconds != 10 {
 		t.Fatalf("expected default poll interval 10, got %d", cfg.OperationPollIntervalSeconds)
 	}
@@ -46,6 +49,7 @@ func TestLoadReadsKeyFlowAndLocalEnvironmentVariables(t *testing.T) {
 	t.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", "/etc/stackit/key.json")
 	t.Setenv("LOCAL_HOST", "192.168.1.50")
 	t.Setenv("LOCAL_PORT", "5433")
+	t.Setenv("LOCAL_DB", "app_local_custom")
 	t.Setenv("LOCAL_USER", "postgres_local")
 	t.Setenv("LOCAL_PASS", "postgres_secret")
 	t.Setenv("STACKIT_OPERATION_POLL_INTERVAL_SECONDS", "25")
@@ -68,6 +72,9 @@ func TestLoadReadsKeyFlowAndLocalEnvironmentVariables(t *testing.T) {
 	}
 	if cfg.LocalHost != "192.168.1.50" || cfg.LocalPort != 5433 {
 		t.Fatalf("expected local endpoint 192.168.1.50:5433, got %s:%d", cfg.LocalHost, cfg.LocalPort)
+	}
+	if cfg.LocalDB != "app_local_custom" {
+		t.Fatalf("expected local db app_local_custom, got %q", cfg.LocalDB)
 	}
 	if cfg.LocalUser != "postgres_local" || cfg.LocalPass != "postgres_secret" {
 		t.Fatalf("expected local user/pass from env, got %s / %s", cfg.LocalUser, cfg.LocalPass)

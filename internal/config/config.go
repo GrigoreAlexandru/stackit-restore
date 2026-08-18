@@ -14,6 +14,7 @@ type Config struct {
 
 	LocalHost string
 	LocalPort int
+	LocalDB   string
 	LocalUser string
 	LocalPass string
 
@@ -28,12 +29,14 @@ const (
 	defaultDumpDir      = "dumps"
 	defaultLocalHost    = "localhost"
 	defaultLocalPort    = 5432
+	defaultLocalDB      = "postgres"
 )
 
 func Default() Config {
 	return Config{
 		LocalHost:                    defaultLocalHost,
 		LocalPort:                    defaultLocalPort,
+		LocalDB:                      defaultLocalDB,
 		OperationPollIntervalSeconds: defaultPollInterval,
 		OperationTimeoutSeconds:      defaultTimeout,
 		DumpDir:                      defaultDumpDir,
@@ -56,6 +59,11 @@ func Load() (Config, error) {
 		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
 			cfg.LocalPort = p
 		}
+	}
+	if db := os.Getenv("LOCAL_DB"); db != "" {
+		cfg.LocalDB = db
+	} else if db := os.Getenv("LOCAL_DATABASE"); db != "" {
+		cfg.LocalDB = db
 	}
 	cfg.LocalUser = os.Getenv("LOCAL_USER")
 	cfg.LocalPass = os.Getenv("LOCAL_PASS")

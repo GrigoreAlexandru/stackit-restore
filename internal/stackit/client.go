@@ -35,7 +35,6 @@ type Database struct {
 
 func NewClient(cfg config.Config) (*Client, error) {
 	opts := []sdkconfig.ConfigurationOption{
-		sdkconfig.WithRegion(cfg.Region),
 		sdkconfig.WithServiceAccountKeyPath(cfg.ServiceAccountKeyPath),
 	}
 

@@ -13,6 +13,7 @@ func TestLocalProvider_HandlesAndEndpoints(t *testing.T) {
 	cfg := config.Config{
 		LocalHost: "127.0.0.1",
 		LocalPort: 5434,
+		LocalDB:   "custom_local_db",
 	}
 
 	lp := NewLocalProvider(cfg)
@@ -36,7 +37,7 @@ func TestLocalProvider_HandlesAndEndpoints(t *testing.T) {
 	}
 
 	databases, err := lp.GetDatabases(context.Background(), LocalInstance)
-	if err != nil || len(databases) != 1 || databases[0].Name != "postgres" {
+	if err != nil || len(databases) != 1 || databases[0].Name != "custom_local_db" {
 		t.Fatalf("unexpected databases from LocalProvider: %v, %v", databases, err)
 	}
 
@@ -91,7 +92,7 @@ func TestStackitProvider_HandlesAndEndpoint(t *testing.T) {
 }
 
 func TestRouter_Routing(t *testing.T) {
-	lp := NewLocalProvider(config.Config{LocalHost: "localhost", LocalPort: 5432})
+	lp := NewLocalProvider(config.Config{LocalHost: "localhost", LocalPort: 5432, LocalDB: "postgres"})
 	sp := NewStackitProvider(nil, "eu01")
 
 	router := NewRouter(lp, sp)

@@ -30,6 +30,15 @@ type action string
 const (
 	actionDump    action = "dump"
 	actionRestore action = "restore"
+	actionSync    action = "sync"
+)
+
+type restoreSourceType string
+
+const (
+	restoreSourceDumpFile    restoreSourceType = "dump_file"
+	restoreSourceCloudBackup restoreSourceType = "cloud_backup"
+	restoreSourceCloudPIT    restoreSourceType = "cloud_pit"
 )
 
 type databaseSelection struct {
@@ -38,112 +47,109 @@ type databaseSelection struct {
 }
 
 type appForm struct {
-	sourceSelection     databaseSelection
-	destSelection       databaseSelection
-	selectedAction      action
-	selectedDumpMode    api.DumpMode
-	selectedRestoreMode restoreMode
-	selectedBackup      api.Backup
-	selectedPIT         time.Time
-	selectedDump        api.DumpArtifact
+	selectedAction action
+
+	// Dump & Sync Source
+	sourceSelection  databaseSelection
+	selectedDumpMode api.DumpMode
+
+	// Restore & Sync Target
+	destSelection databaseSelection
+
+	// Restore Source Details
+	selectedRestoreSource restoreSourceType
+	selectedCloudInstance api.Instance
+	selectedBackup        api.Backup
+	selectedPIT           time.Time
+	selectedDump          api.DumpArtifact
 
 	databaseSelections []databaseSelection
 	backupsByInstance  map[string][]api.Backup
 	dumpArtifacts      []api.DumpArtifact
+	instances          []api.Instance
 
 	apiClient API
 }
 
-type restoreMode string
-
-const (
-	restoreFromLiveDB        restoreMode = "restore_from_live_db"
-	restoreFromStackitBackup restoreMode = "restore_from_stackit_backup"
-	restoreFromPIT           restoreMode = "restore_from_pit"
-	restoreFromDump          restoreMode = "restore_from_dump"
-)
-
-type pitInputMethod string
-
-const (
-	pitMethodSelectBackup pitInputMethod = "select_backup"
-	pitMethodEnterCustom  pitInputMethod = "enter_custom"
-)
-
-func (a *appForm) selectedDBHeader() string {
-	if a.sourceSelection.Instance.Name == "" || a.sourceSelection.Database.Name == "" {
-		return ""
-	}
-	if a.selectedAction == actionRestore && a.destSelection.Instance.Name != "" {
-		return fmt.Sprintf(
-			"Source Database: %s / %s\nDestination Database: %s / %s",
-			a.sourceSelection.Instance.Name,
-			a.sourceSelection.Database.Name,
-			a.destSelection.Instance.Name,
-			a.destSelection.Database.Name,
-		)
-	}
-	return fmt.Sprintf("Source Database: %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name)
-}
-
 func (a *appForm) buildExplanation() string {
-	if a.selectedAction == actionDump {
+	switch a.selectedAction {
+	case actionDump:
 		switch a.selectedDumpMode {
 		case api.DumpModeStandard:
 			return fmt.Sprintf(
-				"Runs pg_dump directly on live source database %q of instance %q and saves the output as a custom binary .dump file.",
+				"Runs pg_dump directly on live database %q of instance %q and saves the output as a custom binary .dump file.",
 				a.sourceSelection.Database.Name,
 				a.sourceSelection.Instance.Name,
 			)
 		case api.DumpModeReplica:
 			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone instance in STACKIT from the latest backup of %q, runs pg_dump on database %q to generate a .dump file, and then deletes the temporary clone instance.",
+				"Creates a temporary PostgreSQL clone instance in STACKIT from latest backup of %q, runs pg_dump on database %q to generate a .dump file, and automatically deletes the temporary clone.",
 				a.sourceSelection.Instance.Name,
 				a.sourceSelection.Database.Name,
 			)
 		case api.DumpModePointInTime:
 			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone instance in STACKIT from point-in-time %s of instance %q, runs pg_dump on database %q to generate a .dump file, and then deletes the temporary clone instance.",
+				"Creates a temporary PostgreSQL clone instance in STACKIT from point-in-time %s of instance %q, runs pg_dump on database %q to generate a .dump file, and automatically deletes the temporary clone.",
 				a.selectedPIT.Format(time.RFC3339),
 				a.sourceSelection.Instance.Name,
 				a.sourceSelection.Database.Name,
 			)
 		}
-	} else if a.selectedAction == actionRestore {
-		switch a.selectedRestoreMode {
-		case restoreFromLiveDB:
+
+	case actionRestore:
+		switch a.selectedRestoreSource {
+		case restoreSourceDumpFile:
 			return fmt.Sprintf(
-				"Runs pg_dump directly on live source database %q of instance %q to generate a temporary .dump file, and restores it into destination database %q of instance %q using pg_restore.",
-				a.sourceSelection.Database.Name,
-				a.sourceSelection.Instance.Name,
-				a.destSelection.Database.Name,
-				a.destSelection.Instance.Name,
-			)
-		case restoreFromStackitBackup:
-			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone instance in STACKIT from backup %q (%s) of source instance %q, runs pg_dump on database %q to generate a .dump file, deletes the clone, and restores into destination database %q of instance %q using pg_restore.",
-				a.selectedBackup.Name,
-				a.selectedBackup.CreatedAt.Format(time.RFC3339),
-				a.sourceSelection.Instance.Name,
-				a.sourceSelection.Database.Name,
-				a.destSelection.Database.Name,
-				a.destSelection.Instance.Name,
-			)
-		case restoreFromPIT:
-			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone instance in STACKIT from point-in-time %s of source instance %q, runs pg_dump on database %q to generate a .dump file, deletes the clone, and restores into destination database %q of instance %q using pg_restore.",
-				a.selectedPIT.Format(time.RFC3339),
-				a.sourceSelection.Instance.Name,
-				a.sourceSelection.Database.Name,
-				a.destSelection.Database.Name,
-				a.destSelection.Instance.Name,
-			)
-		case restoreFromDump:
-			return fmt.Sprintf(
-				"Reads local .dump file %q and restores it into destination database %q of instance %q using pg_restore.",
+				"Reads local .dump file %q and restores it into target database %q of instance %q using pg_restore (--clean).",
 				a.selectedDump.Path,
 				a.destSelection.Database.Name,
 				a.destSelection.Instance.Name,
+			)
+		case restoreSourceCloudBackup:
+			return fmt.Sprintf(
+				"Creates a temporary PostgreSQL clone in STACKIT from backup %q (%s) of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean).",
+				a.selectedBackup.Name,
+				a.selectedBackup.CreatedAt.Format(time.RFC3339),
+				a.selectedCloudInstance.Name,
+				a.destSelection.Database.Name,
+				a.destSelection.Instance.Name,
+			)
+		case restoreSourceCloudPIT:
+			return fmt.Sprintf(
+				"Creates a temporary PostgreSQL clone in STACKIT from point-in-time %s of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean).",
+				a.selectedPIT.Format(time.RFC3339),
+				a.selectedCloudInstance.Name,
+				a.destSelection.Database.Name,
+				a.destSelection.Instance.Name,
+			)
+		}
+
+	case actionSync:
+		switch a.selectedDumpMode {
+		case api.DumpModeStandard:
+			return fmt.Sprintf(
+				"Extracts live dump from %s / %s and restores it directly into %s / %s using pg_restore (--clean).",
+				a.sourceSelection.Instance.Name,
+				a.sourceSelection.Database.Name,
+				a.destSelection.Instance.Name,
+				a.destSelection.Database.Name,
+			)
+		case api.DumpModeReplica:
+			return fmt.Sprintf(
+				"Creates temporary STACKIT clone from latest backup of %s, extracts dump of %s, deletes clone, and restores into %s / %s.",
+				a.sourceSelection.Instance.Name,
+				a.sourceSelection.Database.Name,
+				a.destSelection.Instance.Name,
+				a.destSelection.Database.Name,
+			)
+		case api.DumpModePointInTime:
+			return fmt.Sprintf(
+				"Creates temporary STACKIT clone from point-in-time %s of %s, extracts dump of %s, deletes clone, and restores into %s / %s.",
+				a.selectedPIT.Format(time.RFC3339),
+				a.sourceSelection.Instance.Name,
+				a.sourceSelection.Database.Name,
+				a.destSelection.Instance.Name,
+				a.destSelection.Database.Name,
 			)
 		}
 	}
@@ -169,56 +175,63 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		return fmt.Errorf("get instances: %w", err)
 	}
 
-	var sourceInstance api.Instance
-	foundSourceInst := false
-	for _, inst := range instances {
-		if strings.EqualFold(inst.ID, opts.Instance) || strings.EqualFold(inst.Name, opts.Instance) {
-			sourceInstance = inst
-			foundSourceInst = true
-			break
+	findInstance := func(nameOrID string) (api.Instance, error) {
+		for _, inst := range instances {
+			if strings.EqualFold(inst.ID, nameOrID) || strings.EqualFold(inst.Name, nameOrID) {
+				return inst, nil
+			}
 		}
-	}
-	if !foundSourceInst {
-		return fmt.Errorf("source instance %q not found", opts.Instance)
+		return api.Instance{}, fmt.Errorf("instance %q not found", nameOrID)
 	}
 
-	databases, err := apiClient.GetDatabases(ctx, sourceInstance)
-	if err != nil {
-		return fmt.Errorf("get databases for source instance %q: %w", sourceInstance.Name, err)
-	}
-
-	var sourceDatabase api.Database
-	foundSourceDB := false
-	for _, db := range databases {
-		if strings.EqualFold(db.Name, opts.Database) {
-			sourceDatabase = db
-			foundSourceDB = true
-			break
+	findDatabase := func(inst api.Instance, dbName string) (api.Database, error) {
+		dbs, err := apiClient.GetDatabases(ctx, inst)
+		if err != nil {
+			return api.Database{}, fmt.Errorf("get databases for instance %q: %w", inst.Name, err)
 		}
-	}
-	if !foundSourceDB {
-		return fmt.Errorf("source database %q not found in instance %q", opts.Database, sourceInstance.Name)
-	}
-
-	if !postgres.HasCredentials(sourceInstance.Name) {
-		hint := postgres.GetMissingCredentialsHint(sourceInstance.Name)
-		return fmt.Errorf("source instance %q is unavailable: missing %s in environment", sourceInstance.Name, hint)
+		for _, db := range dbs {
+			if strings.EqualFold(db.Name, dbName) {
+				return db, nil
+			}
+		}
+		if strings.EqualFold(inst.Name, "local") {
+			return api.Database{Name: dbName, ID: 1, Owner: "postgres"}, nil
+		}
+		return api.Database{}, fmt.Errorf("database %q not found in instance %q", dbName, inst.Name)
 	}
 
 	switch action(opts.Action) {
 	case actionDump:
+		srcInst, err := findInstance(opts.Instance)
+		if err != nil {
+			return err
+		}
+		srcDB, err := findDatabase(srcInst, opts.Database)
+		if err != nil {
+			return err
+		}
+
+		if !postgres.HasCredentials(srcInst.Name) {
+			hint := postgres.GetMissingCredentialsHint(srcInst.Name)
+			return fmt.Errorf("instance %q is unavailable: missing %s in environment", srcInst.Name, hint)
+		}
+
 		mode := api.DumpMode(opts.Mode)
+		if strings.EqualFold(srcInst.Name, "local") && mode != api.DumpModeStandard {
+			return fmt.Errorf("dump mode %q is not supported for local database instance: only 'live' dump is supported on local", mode)
+		}
+
 		fmt.Println("================================================================================")
-		fmt.Println("PostgreSQL Operation Summary & Explanation")
+		fmt.Println("PostgreSQL Dump Summary & Explanation")
 		fmt.Println("================================================================================")
 		fmt.Printf("Action:   Dump (%s)\n", mode)
-		fmt.Printf("Source:   %s / %s\n", sourceInstance.Name, sourceDatabase.Name)
+		fmt.Printf("Target:   %s / %s\n", srcInst.Name, srcDB.Name)
 		if opts.PITParsed != nil {
 			fmt.Printf("PIT:      %s\n", opts.PITParsed.Format(time.RFC3339))
 		}
 		fmt.Println("================================================================================")
 
-		artifact, err := apiClient.CreateDump(ctx, sourceInstance, sourceDatabase, mode, opts.PITParsed)
+		artifact, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
 		if err != nil {
 			return fmt.Errorf("create dump: %w", err)
 		}
@@ -226,99 +239,58 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		return nil
 
 	case actionRestore:
-		var targetInstance api.Instance
-		foundTargetInst := false
-		for _, inst := range instances {
-			if strings.EqualFold(inst.ID, opts.TargetInstance) || strings.EqualFold(inst.Name, opts.TargetInstance) {
-				targetInstance = inst
-				foundTargetInst = true
-				break
-			}
-		}
-		if !foundTargetInst {
-			return fmt.Errorf("destination instance %q not found", opts.TargetInstance)
-		}
-
-		if !postgres.HasCredentials(targetInstance.Name) {
-			hint := postgres.GetMissingCredentialsHint(targetInstance.Name)
-			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", targetInstance.Name, hint)
-		}
-
-		targetDatabases, err := apiClient.GetDatabases(ctx, targetInstance)
+		dstInst, err := findInstance(opts.TargetInstance)
 		if err != nil {
-			return fmt.Errorf("get databases for destination instance %q: %w", targetInstance.Name, err)
+			return err
+		}
+		dstDB, err := findDatabase(dstInst, opts.TargetDatabase)
+		if err != nil {
+			return err
 		}
 
-		var targetDatabase api.Database
-		foundTargetDB := false
-		for _, db := range targetDatabases {
-			if strings.EqualFold(db.Name, opts.TargetDatabase) {
-				targetDatabase = db
-				foundTargetDB = true
-				break
-			}
+		if !postgres.HasCredentials(dstInst.Name) {
+			hint := postgres.GetMissingCredentialsHint(dstInst.Name)
+			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", dstInst.Name, hint)
 		}
-		if !foundTargetDB {
-			if strings.EqualFold(targetInstance.Name, "local") {
-				targetDatabase = api.Database{Name: opts.TargetDatabase, ID: 1, Owner: "postgres"}
-			} else {
-				return fmt.Errorf("destination database %q not found in instance %q", opts.TargetDatabase, targetInstance.Name)
-			}
-		}
-
-		mode := restoreMode(opts.Mode)
 
 		fmt.Println("================================================================================")
-		fmt.Println("PostgreSQL Operation Summary & Explanation")
+		fmt.Println("PostgreSQL Restore Summary & Explanation")
 		fmt.Println("================================================================================")
-		fmt.Printf("Action:      Restore (%s)\n", mode)
-		fmt.Printf("Source:      %s / %s\n", sourceInstance.Name, sourceDatabase.Name)
-		fmt.Printf("Destination: %s / %s\n", targetInstance.Name, targetDatabase.Name)
-		if opts.PITParsed != nil {
-			fmt.Printf("PIT:         %s\n", opts.PITParsed.Format(time.RFC3339))
-		}
-		if opts.Backup != "" {
-			fmt.Printf("Backup:      %s\n", opts.Backup)
-		}
-		if opts.DumpFile != "" {
-			fmt.Printf("Dump File:   %s\n", opts.DumpFile)
-		}
-		fmt.Println("================================================================================")
+		fmt.Printf("Action:      Restore (%s)\n", opts.Mode)
+		fmt.Printf("Destination: %s / %s\n", dstInst.Name, dstDB.Name)
 
-		switch mode {
-		case restoreFromLiveDB:
-			fmt.Printf("Dumping from live source database %s / %s and restoring into %s / %s...\n", sourceInstance.Name, sourceDatabase.Name, targetInstance.Name, targetDatabase.Name)
-			dump, err := apiClient.CreateDump(ctx, sourceInstance, sourceDatabase, api.DumpModeStandard, nil)
-			if err != nil {
-				return fmt.Errorf("dump from live source db: %w", err)
-			}
-			if err := apiClient.RestoreDump(ctx, targetInstance, targetDatabase, dump); err != nil {
-				return fmt.Errorf("restore live dump into destination db: %w", err)
-			}
-			fmt.Printf("Restore from live db completed successfully using dump: %s\n", dump.Path)
-			return nil
-
-		case restoreFromDump:
-			fmt.Printf("Restoring from dump file %q into %s / %s...\n", opts.DumpFile, targetInstance.Name, targetDatabase.Name)
+		switch opts.Mode {
+		case "dump_file":
+			fmt.Printf("Source File: %s\n", opts.DumpFile)
+			fmt.Println("================================================================================")
+			fmt.Printf("Restoring from dump file %q into %s / %s...\n", opts.DumpFile, dstInst.Name, dstDB.Name)
 			dumpArtifact := api.DumpArtifact{
 				Name:         filepath.Base(opts.DumpFile),
 				Path:         opts.DumpFile,
 				Mode:         api.DumpModeStandard,
-				InstanceName: sourceInstance.Name,
-				InstanceID:   sourceInstance.ID,
-				DatabaseName: sourceDatabase.Name,
+				InstanceName: dstInst.Name,
+				InstanceID:   dstInst.ID,
+				DatabaseName: dstDB.Name,
 				CreatedAt:    time.Now().UTC(),
 			}
-			if err := apiClient.RestoreDump(ctx, targetInstance, targetDatabase, dumpArtifact); err != nil {
+			if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dumpArtifact); err != nil {
 				return fmt.Errorf("restore dump file: %w", err)
 			}
 			fmt.Printf("Restore completed successfully from file: %s\n", opts.DumpFile)
 			return nil
 
-		case restoreFromStackitBackup:
-			backups, err := apiClient.GetBackups(ctx, sourceInstance)
+		case "backup", "stackit_backup":
+			srcInst, err := findInstance(opts.Instance)
 			if err != nil {
-				return fmt.Errorf("get backups for source instance %q: %w", sourceInstance.Name, err)
+				return err
+			}
+			if strings.EqualFold(srcInst.Name, "local") {
+				return fmt.Errorf("restore from backup is not supported for 'local' instance: backups are only available for STACKIT cloud instances")
+			}
+
+			backups, err := apiClient.GetBackups(ctx, srcInst)
+			if err != nil {
+				return fmt.Errorf("get backups for instance %q: %w", srcInst.Name, err)
 			}
 			var targetBackup *api.Backup
 			for _, b := range backups {
@@ -328,22 +300,35 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				}
 			}
 			if targetBackup == nil {
-				return fmt.Errorf("backup %q not found for source instance %q", opts.Backup, sourceInstance.Name)
+				return fmt.Errorf("backup %q not found for instance %q", opts.Backup, srcInst.Name)
 			}
-			fmt.Printf("Restoring backup %q (%s) into %s / %s...\n", targetBackup.Name, targetBackup.CreatedAt.Format(time.RFC3339), targetInstance.Name, targetDatabase.Name)
-			artifact, err := apiClient.RestoreFromPIT(ctx, targetInstance, targetDatabase, targetBackup.CreatedAt)
+
+			fmt.Printf("Cloud Source: %s (Backup: %s)\n", srcInst.Name, targetBackup.Name)
+			fmt.Println("================================================================================")
+			fmt.Printf("Restoring backup %q (%s) into %s / %s...\n", targetBackup.Name, targetBackup.CreatedAt.Format(time.RFC3339), dstInst.Name, dstDB.Name)
+			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, targetBackup.CreatedAt)
 			if err != nil {
 				return fmt.Errorf("restore from backup: %w", err)
 			}
 			fmt.Printf("Restore from backup completed successfully using dump: %s\n", artifact.Path)
 			return nil
 
-		case restoreFromPIT:
+		case "pit":
+			srcInst, err := findInstance(opts.Instance)
+			if err != nil {
+				return err
+			}
+			if strings.EqualFold(srcInst.Name, "local") {
+				return fmt.Errorf("point-in-time restore is not supported for 'local' instance: PIT is only available for STACKIT cloud instances")
+			}
 			if opts.PITParsed == nil {
 				return fmt.Errorf("missing parsed PIT timestamp")
 			}
-			fmt.Printf("Restoring from PIT datetime %s into %s / %s...\n", opts.PITParsed.Format(time.RFC3339), targetInstance.Name, targetDatabase.Name)
-			artifact, err := apiClient.RestoreFromPIT(ctx, targetInstance, targetDatabase, *opts.PITParsed)
+
+			fmt.Printf("Cloud Source: %s (PIT: %s)\n", srcInst.Name, opts.PITParsed.Format(time.RFC3339))
+			fmt.Println("================================================================================")
+			fmt.Printf("Restoring from PIT datetime %s into %s / %s...\n", opts.PITParsed.Format(time.RFC3339), dstInst.Name, dstDB.Name)
+			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, *opts.PITParsed)
 			if err != nil {
 				return fmt.Errorf("restore from PIT: %w", err)
 			}
@@ -353,6 +338,63 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		default:
 			return fmt.Errorf("unsupported restore mode %q", opts.Mode)
 		}
+
+	case actionSync:
+		srcInst, err := findInstance(opts.Instance)
+		if err != nil {
+			return err
+		}
+		srcDB, err := findDatabase(srcInst, opts.Database)
+		if err != nil {
+			return err
+		}
+
+		dstInst, err := findInstance(opts.TargetInstance)
+		if err != nil {
+			return err
+		}
+		dstDB, err := findDatabase(dstInst, opts.TargetDatabase)
+		if err != nil {
+			return err
+		}
+
+		if !postgres.HasCredentials(srcInst.Name) {
+			hint := postgres.GetMissingCredentialsHint(srcInst.Name)
+			return fmt.Errorf("source instance %q is unavailable: missing %s in environment", srcInst.Name, hint)
+		}
+		if !postgres.HasCredentials(dstInst.Name) {
+			hint := postgres.GetMissingCredentialsHint(dstInst.Name)
+			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", dstInst.Name, hint)
+		}
+
+		mode := api.DumpMode(opts.Mode)
+		if strings.EqualFold(srcInst.Name, "local") && mode != api.DumpModeStandard {
+			return fmt.Errorf("sync mode %q is not supported when source instance is 'local': only 'live' sync is supported on local", mode)
+		}
+
+		fmt.Println("================================================================================")
+		fmt.Println("PostgreSQL Sync Summary & Explanation")
+		fmt.Println("================================================================================")
+		fmt.Printf("Action:      Sync (%s)\n", mode)
+		fmt.Printf("Source:      %s / %s\n", srcInst.Name, srcDB.Name)
+		fmt.Printf("Destination: %s / %s\n", dstInst.Name, dstDB.Name)
+		if opts.PITParsed != nil {
+			fmt.Printf("PIT:         %s\n", opts.PITParsed.Format(time.RFC3339))
+		}
+		fmt.Println("================================================================================")
+
+		fmt.Printf("Extracting dump from %s / %s and restoring into %s / %s...\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name)
+		dump, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
+		if err != nil {
+			return fmt.Errorf("extract dump from source: %w", err)
+		}
+
+		if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dump); err != nil {
+			return fmt.Errorf("restore dump into destination: %w", err)
+		}
+
+		fmt.Printf("Sync completed successfully from %s / %s into %s / %s using dump: %s\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name, dump.Path)
+		return nil
 
 	default:
 		return fmt.Errorf("unsupported action %q", opts.Action)
@@ -374,37 +416,16 @@ func Execute(ctx context.Context, apiClient API) error {
 		return err
 	}
 
-	sourceForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[databaseSelection]().
-				OptionsFunc(app.getDatabaseOptions, app.databaseSelections).
-				Validate(func(s databaseSelection) error {
-					if !postgres.HasCredentials(s.Instance.Name) {
-						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
-						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
-					}
-					return nil
-				}).
-				Value(&app.sourceSelection).
-				Title("Please select the source database").
-				Height(5),
-		),
-	)
-
-	if err := sourceForm.Run(); err != nil {
-		return err
-	}
-
 	actionForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[action]().
 				Options(
-					huh.NewOption("Dump", actionDump),
-					huh.NewOption("Restore", actionRestore),
+					huh.NewOption("Dump to File (Export a database to a custom binary .dump file)", actionDump),
+					huh.NewOption("Restore to Database (Apply a .dump file, cloud backup, or PIT snapshot into a target database)", actionRestore),
+					huh.NewOption("Sync Databases (Copy data directly from one database to another)", actionSync),
 				).
 				Value(&app.selectedAction).
-				Title("What would you like to do with this database?").
-				Description(app.selectedDBHeader()),
+				Title("What would you like to do?"),
 		),
 	)
 
@@ -414,62 +435,61 @@ func Execute(ctx context.Context, apiClient API) error {
 
 	switch app.selectedAction {
 	case actionDump:
-		if err := app.runDumpFlow(ctx); err != nil {
-			return err
-		}
+		return app.runDumpFlow(ctx)
 	case actionRestore:
-		destForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[databaseSelection]().
-					OptionsFunc(app.getDestinationDatabaseOptions, app.databaseSelections).
-					Validate(func(s databaseSelection) error {
-						if !postgres.HasCredentials(s.Instance.Name) {
-							hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
-							return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
-						}
-						return nil
-					}).
-					Value(&app.destSelection).
-					Title("Please select the destination database to restore into").
-					Description(app.selectedDBHeader()).
-					Height(5),
-			),
-		)
-
-		if err := destForm.Run(); err != nil {
-			return err
-		}
-
-		if err := app.runRestoreFlow(ctx); err != nil {
-			return err
-		}
+		return app.runRestoreFlow(ctx)
+	case actionSync:
+		return app.runSyncFlow(ctx)
 	}
 
 	return nil
 }
 
 func (a *appForm) runDumpFlow(ctx context.Context) error {
-	dumpModeForm := huh.NewForm(
+	sourceForm := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[api.DumpMode]().
-				Options(
-					huh.NewOption("Dump from live data", api.DumpModeStandard),
-					huh.NewOption("Dump from stackit replica", api.DumpModeReplica),
-					huh.NewOption("Dump from stackit replica (PIT)", api.DumpModePointInTime),
-				).
-				Value(&a.selectedDumpMode).
-				Title("Please select dump mode").
-				Description(a.selectedDBHeader()),
+			huh.NewSelect[databaseSelection]().
+				OptionsFunc(a.getDatabaseOptions, a.databaseSelections).
+				Validate(func(s databaseSelection) error {
+					if !postgres.HasCredentials(s.Instance.Name) {
+						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+					}
+					return nil
+				}).
+				Value(&a.sourceSelection).
+				Title("Please select the database to export").
+				Height(5),
 		),
 	)
-
-	if err := dumpModeForm.Run(); err != nil {
+	if err := sourceForm.Run(); err != nil {
 		return err
 	}
 
-	if a.selectedDumpMode == api.DumpModePointInTime {
-		if err := a.promptPITTimestamp(); err != nil {
+	if strings.EqualFold(a.sourceSelection.Instance.Name, "local") {
+		a.selectedDumpMode = api.DumpModeStandard
+	} else {
+		dumpModeForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[api.DumpMode]().
+					Options(
+						huh.NewOption("Live Database (Direct pg_dump on live instance)", api.DumpModeStandard),
+						huh.NewOption("STACKIT Replica (Zero-impact clone from latest backup)", api.DumpModeReplica),
+						huh.NewOption("STACKIT Replica (Point-In-Time snapshot clone)", api.DumpModePointInTime),
+					).
+					Value(&a.selectedDumpMode).
+					Title("Please select dump extraction strategy").
+					Description(fmt.Sprintf("Target Database: %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name)),
+			),
+		)
+		if err := dumpModeForm.Run(); err != nil {
 			return err
+		}
+
+		if a.selectedDumpMode == api.DumpModePointInTime {
+			if err := a.promptPITTimestamp(a.sourceSelection.Instance); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -478,15 +498,13 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Confirm Dump Operation?").
-				Description(fmt.Sprintf("%s\n\nExplanation:\n%s", a.selectedDBHeader(), a.buildExplanation())).
+				Description(fmt.Sprintf("Target Database: %s / %s\n\nExplanation:\n%s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, a.buildExplanation())).
 				Value(&confirm),
 		),
 	)
-
 	if err := confirmForm.Run(); err != nil {
 		return err
 	}
-
 	if !confirm {
 		fmt.Println("Operation cancelled by user.")
 		return nil
@@ -526,87 +544,45 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 }
 
 func (a *appForm) runRestoreFlow(ctx context.Context) error {
-	restoreModeForm := huh.NewForm(
+	destForm := huh.NewForm(
 		huh.NewGroup(
-			huh.NewSelect[restoreMode]().
-				Options(
-					huh.NewOption("Restore from live db", restoreFromLiveDB),
-					huh.NewOption("Restore from Stackit backup", restoreFromStackitBackup),
-					huh.NewOption("Restore from Stackit replica (PIT)", restoreFromPIT),
-					huh.NewOption("Restore from existing .dump file", restoreFromDump),
-				).
-				Value(&a.selectedRestoreMode).
-				Title("Please select restore mode").
-				Description(a.selectedDBHeader()),
+			huh.NewSelect[databaseSelection]().
+				OptionsFunc(a.getDestinationDatabaseOptions, a.databaseSelections).
+				Validate(func(s databaseSelection) error {
+					if !postgres.HasCredentials(s.Instance.Name) {
+						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+					}
+					return nil
+				}).
+				Value(&a.destSelection).
+				Title("Please select the target database to restore into").
+				Height(5),
 		),
 	)
-	if err := restoreModeForm.Run(); err != nil {
+	if err := destForm.Run(); err != nil {
 		return err
 	}
 
-	switch a.selectedRestoreMode {
-	case restoreFromLiveDB:
-		var confirm bool
-		confirmForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title("Confirm Restore Operation?").
-					Description(fmt.Sprintf("%s\n\nExplanation:\n%s", a.selectedDBHeader(), a.buildExplanation())).
-					Value(&confirm),
-			),
-		)
-		if err := confirmForm.Run(); err != nil {
-			return err
-		}
-		if !confirm {
-			fmt.Println("Operation cancelled by user.")
-			return nil
-		}
+	sourceTypeForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[restoreSourceType]().
+				Options(
+					huh.NewOption("Local .dump File (Select from dumps/ directory)", restoreSourceDumpFile),
+					huh.NewOption("STACKIT Cloud Backup (Restore from automated cloud backup)", restoreSourceCloudBackup),
+					huh.NewOption("STACKIT Point-In-Time Snapshot (Restore from PIT timestamp)", restoreSourceCloudPIT),
+				).
+				Value(&a.selectedRestoreSource).
+				Title("Where would you like to restore data from?").
+				Description(fmt.Sprintf("Target Database: %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name)),
+		),
+	)
+	if err := sourceTypeForm.Run(); err != nil {
+		return err
+	}
 
-		var generatedDump api.DumpArtifact
-		err := spinner.New().
-			Context(ctx).
-			Accessible(false).
-			Title("Restoring directly from live source database into destination...").
-			ActionWithErr(func(ctx context.Context) error {
-				dump, err := a.apiClient.CreateDump(
-					ctx,
-					a.sourceSelection.Instance,
-					a.sourceSelection.Database,
-					api.DumpModeStandard,
-					nil,
-				)
-				if err != nil {
-					return fmt.Errorf("create dump from live source db: %w", err)
-				}
-				generatedDump = dump
-
-				if err := a.apiClient.RestoreDump(
-					ctx,
-					a.destSelection.Instance,
-					a.destSelection.Database,
-					dump,
-				); err != nil {
-					return fmt.Errorf("restore live dump into destination db: %w", err)
-				}
-				return nil
-			}).
-			Run()
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf(
-			"Restore from live db completed for source %s / %s into destination %s / %s using dump: %s\n",
-			a.sourceSelection.Instance.Name,
-			a.sourceSelection.Database.Name,
-			a.destSelection.Instance.Name,
-			a.destSelection.Database.Name,
-			generatedDump.Path,
-		)
-		return nil
-
-	case restoreFromDump:
+	switch a.selectedRestoreSource {
+	case restoreSourceDumpFile:
 		if err := a.loadDumpArtifacts(ctx); err != nil {
 			return err
 		}
@@ -619,8 +595,8 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 				huh.NewSelect[api.DumpArtifact]().
 					OptionsFunc(a.getDumpOptions, a.dumpArtifacts).
 					Value(&a.selectedDump).
-					Title("Please select a dump to restore").
-					Description(a.selectedDBHeader()).
+					Title("Please select the .dump file to restore").
+					Description(fmt.Sprintf("Target Database: %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name)).
 					Height(5),
 			),
 		)
@@ -628,27 +604,46 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 			return err
 		}
 
-		var confirm bool
-		confirmForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title("Confirm Restore Operation?").
-					Description(fmt.Sprintf("%s\n\nExplanation:\n%s", a.selectedDBHeader(), a.buildExplanation())).
-					Value(&confirm),
-			),
-		)
-		if err := confirmForm.Run(); err != nil {
+	case restoreSourceCloudBackup:
+		if err := a.selectCloudInstance(); err != nil {
 			return err
 		}
-		if !confirm {
-			fmt.Println("Operation cancelled by user.")
-			return nil
+		if err := a.selectBackupForInstance(a.selectedCloudInstance); err != nil {
+			return err
 		}
 
+	case restoreSourceCloudPIT:
+		if err := a.selectCloudInstance(); err != nil {
+			return err
+		}
+		if err := a.promptPITTimestamp(a.selectedCloudInstance); err != nil {
+			return err
+		}
+	}
+
+	var confirm bool
+	confirmForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Confirm Restore Operation? (Target database will be overwritten)").
+				Description(fmt.Sprintf("Target Database: %s / %s\n\nExplanation:\n%s", a.destSelection.Instance.Name, a.destSelection.Database.Name, a.buildExplanation())).
+				Value(&confirm),
+		),
+	)
+	if err := confirmForm.Run(); err != nil {
+		return err
+	}
+	if !confirm {
+		fmt.Println("Operation cancelled by user.")
+		return nil
+	}
+
+	switch a.selectedRestoreSource {
+	case restoreSourceDumpFile:
 		err := spinner.New().
 			Context(ctx).
 			Accessible(false).
-			Title("Restoring dump...").
+			Title("Restoring dump file into database...").
 			ActionWithErr(func(ctx context.Context) error {
 				return a.apiClient.RestoreDump(ctx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump)
 			}).
@@ -656,42 +651,15 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-
-		fmt.Printf(
-			"Restore completed from dump %s into %s / %s\n",
-			a.selectedDump.Path,
-			a.destSelection.Instance.Name,
-			a.destSelection.Database.Name,
-		)
+		fmt.Printf("Restore completed from dump %s into %s / %s\n", a.selectedDump.Path, a.destSelection.Instance.Name, a.destSelection.Database.Name)
 		return nil
 
-	case restoreFromStackitBackup:
-		if err := a.selectBackupForPIT(); err != nil {
-			return err
-		}
-
-		var confirm bool
-		confirmForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title("Confirm Restore Operation?").
-					Description(fmt.Sprintf("%s\n\nExplanation:\n%s", a.selectedDBHeader(), a.buildExplanation())).
-					Value(&confirm),
-			),
-		)
-		if err := confirmForm.Run(); err != nil {
-			return err
-		}
-		if !confirm {
-			fmt.Println("Operation cancelled by user.")
-			return nil
-		}
-
+	case restoreSourceCloudBackup:
 		var generatedDump api.DumpArtifact
 		err := spinner.New().
 			Context(ctx).
 			Accessible(false).
-			Title("Restoring from backup...").
+			Title("Extracting cloud backup and restoring into target database...").
 			ActionWithErr(func(ctx context.Context) error {
 				dump, err := a.apiClient.RestoreFromPIT(
 					ctx,
@@ -709,44 +677,15 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-
-		fmt.Printf(
-			"Restore from backup completed for source %s / %s into destination %s / %s using dump: %s\n",
-			a.sourceSelection.Instance.Name,
-			a.sourceSelection.Database.Name,
-			a.destSelection.Instance.Name,
-			a.destSelection.Database.Name,
-			generatedDump.Path,
-		)
+		fmt.Printf("Restore from backup completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, generatedDump.Path)
 		return nil
 
-	case restoreFromPIT:
-		if err := a.promptPITTimestamp(); err != nil {
-			return err
-		}
-
-		var confirm bool
-		confirmForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title("Confirm Restore Operation?").
-					Description(fmt.Sprintf("%s\n\nExplanation:\n%s", a.selectedDBHeader(), a.buildExplanation())).
-					Value(&confirm),
-			),
-		)
-		if err := confirmForm.Run(); err != nil {
-			return err
-		}
-		if !confirm {
-			fmt.Println("Operation cancelled by user.")
-			return nil
-		}
-
+	case restoreSourceCloudPIT:
 		var generatedDump api.DumpArtifact
 		err := spinner.New().
 			Context(ctx).
 			Accessible(false).
-			Title("Restoring from PIT...").
+			Title("Creating PIT clone and restoring into target database...").
 			ActionWithErr(func(ctx context.Context) error {
 				dump, err := a.apiClient.RestoreFromPIT(
 					ctx,
@@ -764,20 +703,146 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-
-		fmt.Printf(
-			"Restore from PIT completed for source %s / %s into destination %s / %s using dump: %s\n",
-			a.sourceSelection.Instance.Name,
-			a.sourceSelection.Database.Name,
-			a.destSelection.Instance.Name,
-			a.destSelection.Database.Name,
-			generatedDump.Path,
-		)
+		fmt.Printf("Restore from PIT completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, generatedDump.Path)
 		return nil
-
-	default:
-		return fmt.Errorf("unsupported restore mode %q", a.selectedRestoreMode)
 	}
+
+	return nil
+}
+
+func (a *appForm) runSyncFlow(ctx context.Context) error {
+	sourceForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[databaseSelection]().
+				OptionsFunc(a.getDatabaseOptions, a.databaseSelections).
+				Validate(func(s databaseSelection) error {
+					if !postgres.HasCredentials(s.Instance.Name) {
+						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+					}
+					return nil
+				}).
+				Value(&a.sourceSelection).
+				Title("Please select the source database to copy from").
+				Height(5),
+		),
+	)
+	if err := sourceForm.Run(); err != nil {
+		return err
+	}
+
+	destForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[databaseSelection]().
+				OptionsFunc(a.getDestinationDatabaseOptions, a.databaseSelections).
+				Validate(func(s databaseSelection) error {
+					if !postgres.HasCredentials(s.Instance.Name) {
+						hint := postgres.GetMissingCredentialsHint(s.Instance.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", s.Instance.Name, hint)
+					}
+					return nil
+				}).
+				Value(&a.destSelection).
+				Title("Please select the target database to copy into").
+				Description(fmt.Sprintf("Source Database: %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name)).
+				Height(5),
+		),
+	)
+	if err := destForm.Run(); err != nil {
+		return err
+	}
+
+	if strings.EqualFold(a.sourceSelection.Instance.Name, "local") {
+		a.selectedDumpMode = api.DumpModeStandard
+	} else {
+		syncModeForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[api.DumpMode]().
+					Options(
+						huh.NewOption("Live Sync (Direct dump from live source -> restore into target)", api.DumpModeStandard),
+						huh.NewOption("Backup-Based Sync (Clone from source backup -> restore -> cleanup)", api.DumpModeReplica),
+						huh.NewOption("Point-In-Time Sync (Clone from source PIT -> restore -> cleanup)", api.DumpModePointInTime),
+					).
+					Value(&a.selectedDumpMode).
+					Title("Please select extraction strategy for source database").
+					Description(fmt.Sprintf("Source: %s / %s  ->  Destination: %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, a.destSelection.Instance.Name, a.destSelection.Database.Name)),
+			),
+		)
+		if err := syncModeForm.Run(); err != nil {
+			return err
+		}
+
+		if a.selectedDumpMode == api.DumpModePointInTime {
+			if err := a.promptPITTimestamp(a.sourceSelection.Instance); err != nil {
+				return err
+			}
+		}
+	}
+
+	var confirm bool
+	confirmForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Confirm Database Sync Operation? (Target database will be overwritten)").
+				Description(fmt.Sprintf("Source: %s / %s\nDestination: %s / %s\n\nExplanation:\n%s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, a.destSelection.Instance.Name, a.destSelection.Database.Name, a.buildExplanation())).
+				Value(&confirm),
+		),
+	)
+	if err := confirmForm.Run(); err != nil {
+		return err
+	}
+	if !confirm {
+		fmt.Println("Operation cancelled by user.")
+		return nil
+	}
+
+	var generatedDump api.DumpArtifact
+	err := spinner.New().
+		Context(ctx).
+		Accessible(false).
+		Title("Syncing database from source to destination...").
+		ActionWithErr(func(ctx context.Context) error {
+			var pit *time.Time
+			if a.selectedDumpMode == api.DumpModePointInTime {
+				pit = &a.selectedPIT
+			}
+
+			dump, err := a.apiClient.CreateDump(
+				ctx,
+				a.sourceSelection.Instance,
+				a.sourceSelection.Database,
+				a.selectedDumpMode,
+				pit,
+			)
+			if err != nil {
+				return fmt.Errorf("dump from source db: %w", err)
+			}
+			generatedDump = dump
+
+			if err := a.apiClient.RestoreDump(
+				ctx,
+				a.destSelection.Instance,
+				a.destSelection.Database,
+				dump,
+			); err != nil {
+				return fmt.Errorf("restore dump into destination db: %w", err)
+			}
+			return nil
+		}).
+		Run()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf(
+		"Sync completed successfully from %s / %s into %s / %s using dump: %s\n",
+		a.sourceSelection.Instance.Name,
+		a.sourceSelection.Database.Name,
+		a.destSelection.Instance.Name,
+		a.destSelection.Database.Name,
+		generatedDump.Path,
+	)
+	return nil
 }
 
 func (a *appForm) preloadResources(ctx context.Context) error {
@@ -790,6 +855,7 @@ func (a *appForm) preloadResources(ctx context.Context) error {
 		return fmt.Errorf("no instances found")
 	}
 
+	a.instances = instances
 	a.backupsByInstance = make(map[string][]api.Backup, len(instances))
 	a.databaseSelections = make([]databaseSelection, 0, len(instances))
 
@@ -836,33 +902,80 @@ func (a *appForm) getDatabaseOptions() []huh.Option[databaseSelection] {
 }
 
 func (a *appForm) getDestinationDatabaseOptions() []huh.Option[databaseSelection] {
-	options := make([]huh.Option[databaseSelection], len(a.databaseSelections))
-	for i, selection := range a.databaseSelections {
-		hasCreds := postgres.HasCredentials(selection.Instance.Name)
-		label := fmt.Sprintf("%s / %s", selection.Instance.Name, selection.Database.Name)
-		if !hasCreds {
-			hint := postgres.GetMissingCredentialsHint(selection.Instance.Name)
-			label = fmt.Sprintf("%s / %s (unavailable: missing %s)", selection.Instance.Name, selection.Database.Name, hint)
+	return a.getDatabaseOptions()
+}
+
+func (a *appForm) getCloudInstanceOptions() []huh.Option[api.Instance] {
+	var cloudInstances []api.Instance
+	for _, inst := range a.instances {
+		if !strings.EqualFold(inst.Name, "local") && !strings.EqualFold(inst.ID, "local") {
+			cloudInstances = append(cloudInstances, inst)
 		}
-		options[i] = huh.NewOption(label, selection)
+	}
+
+	options := make([]huh.Option[api.Instance], len(cloudInstances))
+	for i, inst := range cloudInstances {
+		hasCreds := postgres.HasCredentials(inst.Name)
+		label := inst.Name
+		if !hasCreds {
+			hint := postgres.GetMissingCredentialsHint(inst.Name)
+			label = fmt.Sprintf("%s (unavailable: missing %s)", inst.Name, hint)
+		}
+		options[i] = huh.NewOption(label, inst)
 	}
 	return options
 }
 
-func (a *appForm) getRestoreBackupOptions() []huh.Option[api.Backup] {
-	backups := a.backupsByInstance[a.sourceSelection.Instance.ID]
+func (a *appForm) selectCloudInstance() error {
+	options := a.getCloudInstanceOptions()
+	if len(options) == 0 {
+		return fmt.Errorf("no STACKIT cloud instances found for cloud backup restore")
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[api.Instance]().
+				Options(options...).
+				Validate(func(inst api.Instance) error {
+					if !postgres.HasCredentials(inst.Name) {
+						hint := postgres.GetMissingCredentialsHint(inst.Name)
+						return fmt.Errorf("instance %q is unavailable: missing %s", inst.Name, hint)
+					}
+					return nil
+				}).
+				Value(&a.selectedCloudInstance).
+				Title("Please select the STACKIT cloud instance providing the backup"),
+		),
+	)
+	return form.Run()
+}
+
+func (a *appForm) selectBackupForInstance(inst api.Instance) error {
+	backups := a.backupsByInstance[inst.ID]
+	if len(backups) == 0 {
+		return fmt.Errorf("no backups available for instance %q", inst.Name)
+	}
+
 	sort.Slice(backups, func(i, j int) bool {
 		return backups[i].CreatedAt.After(backups[j].CreatedAt)
 	})
 
 	options := make([]huh.Option[api.Backup], len(backups))
-
 	for i, backup := range backups {
 		label := fmt.Sprintf("%s (%s)", backup.Name, backup.CreatedAt.Format(time.RFC3339))
 		options[i] = huh.NewOption(label, backup)
 	}
 
-	return options
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[api.Backup]().
+				Options(options...).
+				Value(&a.selectedBackup).
+				Title("Please select the cloud backup to restore").
+				Height(5),
+		),
+	)
+	return form.Run()
 }
 
 func (a *appForm) getDumpOptions() []huh.Option[api.DumpArtifact] {
@@ -903,31 +1016,15 @@ func (a *appForm) loadDumpArtifacts(ctx context.Context) error {
 	return nil
 }
 
-func (a *appForm) selectBackupForPIT() error {
-	backups := a.backupsByInstance[a.sourceSelection.Instance.ID]
-	if len(backups) == 0 {
-		return fmt.Errorf("no backups available for source instance %q", a.sourceSelection.Instance.Name)
-	}
+type pitInputMethod string
 
-	restoreForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[api.Backup]().
-				OptionsFunc(a.getRestoreBackupOptions, a.sourceSelection).
-				Value(&a.selectedBackup).
-				Title("Please select source backup").
-				Description(a.selectedDBHeader()).
-				Height(5),
-		),
-	)
+const (
+	pitMethodSelectBackup pitInputMethod = "select_backup"
+	pitMethodEnterCustom  pitInputMethod = "enter_custom"
+)
 
-	if err := restoreForm.Run(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (a *appForm) promptPITTimestamp() error {
-	backups := a.backupsByInstance[a.sourceSelection.Instance.ID]
+func (a *appForm) promptPITTimestamp(inst api.Instance) error {
+	backups := a.backupsByInstance[inst.ID]
 
 	if len(backups) > 0 {
 		var method pitInputMethod
@@ -939,8 +1036,7 @@ func (a *appForm) promptPITTimestamp() error {
 						huh.NewOption("Enter custom datetime", pitMethodEnterCustom),
 					).
 					Value(&method).
-					Title("How would you like to specify the PIT datetime?").
-					Description(a.selectedDBHeader()),
+					Title("How would you like to specify the Point-In-Time datetime?"),
 			),
 		)
 		if err := methodForm.Run(); err != nil {
@@ -948,7 +1044,7 @@ func (a *appForm) promptPITTimestamp() error {
 		}
 
 		if method == pitMethodSelectBackup {
-			if err := a.selectBackupForPIT(); err != nil {
+			if err := a.selectBackupForInstance(inst); err != nil {
 				return err
 			}
 			a.selectedPIT = a.selectedBackup.CreatedAt
@@ -961,7 +1057,7 @@ func (a *appForm) promptPITTimestamp() error {
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Enter Point-In-Time datetime (UTC)").
-				Description(fmt.Sprintf("%s\nFormat: YYYY-MM-DD HH:MM:SS or RFC3339 (e.g. 2026-08-13 15:00:00)", a.selectedDBHeader())).
+				Description("Format: YYYY-MM-DD HH:MM:SS or RFC3339 (e.g. 2026-08-13 15:00:00)").
 				Value(&rawInput).
 				Validate(func(val string) error {
 					_, err := ParsePITTimestamp(val)
