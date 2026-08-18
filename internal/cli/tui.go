@@ -13,7 +13,10 @@ import (
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
+	"github.com/charmbracelet/lipgloss"
 )
+
+var unavailableStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 type API interface {
 	GetInstances(ctx context.Context) ([]api.Instance, error)
@@ -888,16 +891,42 @@ func (a *appForm) preloadResources(ctx context.Context) error {
 }
 
 func (a *appForm) getDatabaseOptions() []huh.Option[databaseSelection] {
-	options := make([]huh.Option[databaseSelection], len(a.databaseSelections))
-	for i, selection := range a.databaseSelections {
-		hasCreds := postgres.HasCredentials(selection.Instance.Name)
-		label := fmt.Sprintf("%s / %s", selection.Instance.Name, selection.Database.Name)
-		if !hasCreds {
-			hint := postgres.GetMissingCredentialsHint(selection.Instance.Name)
-			label = fmt.Sprintf("%s / %s (unavailable: missing %s)", selection.Instance.Name, selection.Database.Name, hint)
+	var available []databaseSelection
+	var unavailable []databaseSelection
+
+	for _, selection := range a.databaseSelections {
+		if postgres.HasCredentials(selection.Instance.Name) {
+			available = append(available, selection)
+		} else {
+			unavailable = append(unavailable, selection)
 		}
-		options[i] = huh.NewOption(label, selection)
 	}
+
+	sort.Slice(available, func(i, j int) bool {
+		if available[i].Instance.Name == available[j].Instance.Name {
+			return available[i].Database.Name < available[j].Database.Name
+		}
+		return available[i].Instance.Name < available[j].Instance.Name
+	})
+
+	sort.Slice(unavailable, func(i, j int) bool {
+		if unavailable[i].Instance.Name == unavailable[j].Instance.Name {
+			return unavailable[i].Database.Name < unavailable[j].Database.Name
+		}
+		return unavailable[i].Instance.Name < unavailable[j].Instance.Name
+	})
+
+	var options []huh.Option[databaseSelection]
+	for _, selection := range available {
+		label := fmt.Sprintf("%s / %s", selection.Instance.Name, selection.Database.Name)
+		options = append(options, huh.NewOption(label, selection))
+	}
+	for _, selection := range unavailable {
+		hint := postgres.GetMissingCredentialsHint(selection.Instance.Name)
+		rawLabel := fmt.Sprintf("%s / %s (unavailable: missing %s)", selection.Instance.Name, selection.Database.Name, hint)
+		options = append(options, huh.NewOption(unavailableStyle.Render(rawLabel), selection))
+	}
+
 	return options
 }
 
@@ -906,23 +935,37 @@ func (a *appForm) getDestinationDatabaseOptions() []huh.Option[databaseSelection
 }
 
 func (a *appForm) getCloudInstanceOptions() []huh.Option[api.Instance] {
-	var cloudInstances []api.Instance
+	var available []api.Instance
+	var unavailable []api.Instance
+
 	for _, inst := range a.instances {
-		if !strings.EqualFold(inst.Name, "local") && !strings.EqualFold(inst.ID, "local") {
-			cloudInstances = append(cloudInstances, inst)
+		if strings.EqualFold(inst.Name, "local") || strings.EqualFold(inst.ID, "local") {
+			continue
+		}
+		if postgres.HasCredentials(inst.Name) {
+			available = append(available, inst)
+		} else {
+			unavailable = append(unavailable, inst)
 		}
 	}
 
-	options := make([]huh.Option[api.Instance], len(cloudInstances))
-	for i, inst := range cloudInstances {
-		hasCreds := postgres.HasCredentials(inst.Name)
-		label := inst.Name
-		if !hasCreds {
-			hint := postgres.GetMissingCredentialsHint(inst.Name)
-			label = fmt.Sprintf("%s (unavailable: missing %s)", inst.Name, hint)
-		}
-		options[i] = huh.NewOption(label, inst)
+	sort.Slice(available, func(i, j int) bool {
+		return available[i].Name < available[j].Name
+	})
+	sort.Slice(unavailable, func(i, j int) bool {
+		return unavailable[i].Name < unavailable[j].Name
+	})
+
+	var options []huh.Option[api.Instance]
+	for _, inst := range available {
+		options = append(options, huh.NewOption(inst.Name, inst))
 	}
+	for _, inst := range unavailable {
+		hint := postgres.GetMissingCredentialsHint(inst.Name)
+		rawLabel := fmt.Sprintf("%s (unavailable: missing %s)", inst.Name, hint)
+		options = append(options, huh.NewOption(unavailableStyle.Render(rawLabel), inst))
+	}
+
 	return options
 }
 
