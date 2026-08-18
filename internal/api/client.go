@@ -112,7 +112,6 @@ func (c *Client) CreateDump(
 
 	switch mode {
 	case DumpModeStandard:
-		fmt.Printf("\n[Step 1/1] Extracting live database dump from %s / %s...\n", instance.Name, database.Name)
 		return c.createDumpFromInstance(ctx, p, instance, database, mode)
 
 	case DumpModeReplica:
@@ -125,7 +124,6 @@ func (c *Client) CreateDump(
 			return DumpArtifact{}, err
 		}
 
-		fmt.Printf("\n[Step 1/3] Creating temporary clone from latest backup of %s...\n", instance.Name)
 		clone, err := p.CreateClone(ctx, instance, latestBackupTime)
 		if err != nil {
 			return DumpArtifact{}, err
@@ -136,10 +134,7 @@ func (c *Client) CreateDump(
 			cloneProvider = p
 		}
 
-		fmt.Printf("\n[Step 2/3] Extracting dump from temporary clone (%s / %s)...\n", clone.Name, database.Name)
 		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode)
-
-		fmt.Printf("\n[Step 3/3] Deleting temporary clone instance (%s)...\n", clone.Name)
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
@@ -167,7 +162,6 @@ func (c *Client) CreateDump(
 			return DumpArtifact{}, fmt.Errorf("point in time is required for %q mode", mode)
 		}
 
-		fmt.Printf("\n[Step 1/3] Creating temporary clone at %s from %s...\n", pit.Format(time.RFC3339), instance.Name)
 		clone, err := p.CreateClone(ctx, instance, *pit)
 		if err != nil {
 			return DumpArtifact{}, err
@@ -178,10 +172,7 @@ func (c *Client) CreateDump(
 			cloneProvider = p
 		}
 
-		fmt.Printf("\n[Step 2/3] Extracting dump from temporary clone (%s / %s)...\n", clone.Name, database.Name)
 		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode)
-
-		fmt.Printf("\n[Step 3/3] Deleting temporary clone instance (%s)...\n", clone.Name)
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
@@ -227,7 +218,6 @@ func (c *Client) RestoreDump(
 		return err
 	}
 
-	fmt.Printf("\n[Step] Restoring dump file %s into target database %s / %s...\n", dump.Path, instance.Name, database.Name)
 	return postgres.RunPgRestore(ctx, endpoint.Host, endpoint.Port, database.Name, dump.Path, credentials)
 }
 
@@ -237,13 +227,11 @@ func (c *Client) RestoreFromPIT(
 	database Database,
 	pit time.Time,
 ) (DumpArtifact, error) {
-	fmt.Printf("\n[Phase 1/2] Extracting dump from clone at %s...\n", pit.Format(time.RFC3339))
 	dump, err := c.CreateDump(ctx, instance, database, DumpModePointInTime, &pit)
 	if err != nil {
 		return DumpArtifact{}, err
 	}
 
-	fmt.Printf("\n[Phase 2/2] Restoring extracted dump into target database %s / %s...\n", instance.Name, database.Name)
 	if err := c.RestoreDump(ctx, instance, database, dump); err != nil {
 		return DumpArtifact{}, err
 	}

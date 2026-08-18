@@ -3,6 +3,7 @@ package stackit
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/config"
@@ -12,9 +13,23 @@ import (
 )
 
 type Client struct {
-	api       *postgresflex.APIClient
-	projectID string
-	region    string
+	api          *postgresflex.APIClient
+	projectID    string
+	region       string
+	outputWriter io.Writer
+}
+
+func (c *Client) SetOutputWriter(w io.Writer) {
+	c.outputWriter = w
+}
+
+func (c *Client) logf(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	if c.outputWriter != nil {
+		fmt.Fprint(c.outputWriter, msg)
+	} else {
+		fmt.Print(msg)
+	}
 }
 
 type Instance struct {
@@ -120,18 +135,18 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 		PointInTime: pit,
 	}
 
-	fmt.Printf("Initiating STACKIT clone from instance %q (ID: %s) at %s...\n", instance.Name, instance.ID, pit.Format(time.RFC3339))
+	c.logf("Initiating STACKIT clone from instance %q (ID: %s) at %s...\n", instance.Name, instance.ID, pit.Format(time.RFC3339))
 	clone, err := c.api.DefaultAPI.CloneInstance(ctx, c.projectID, c.region, instance.ID).CloneInstancePayload(payload).Execute()
 	if err != nil {
 		return Instance{}, fmt.Errorf("create clone instance name %q: %w", instance.Name, err)
 	}
 
-	fmt.Printf("Clone requested (ID: %s). Waiting for instance provisioning...\n", clone.Id)
+	c.logf("Clone requested (ID: %s). Waiting for instance provisioning...\n", clone.Id)
 	response, err := wait.CloneInstanceWaitHandler(ctx, c.api.DefaultAPI, c.projectID, c.region, clone.Id).WaitWithContext(ctx)
 	if err != nil {
 		return Instance{}, fmt.Errorf("wait for clone instance name %q, clone id %q: %w", instance.Name, clone.Id, err)
 	}
-	fmt.Printf("Clone instance %q (ID: %s) is now ready.\n", response.Name, response.Id)
+	c.logf("Clone instance %q (ID: %s) is now ready.\n", response.Name, response.Id)
 
 	return Instance{
 		Name: response.Name,
@@ -140,18 +155,18 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 }
 
 func (c *Client) DeleteInstance(ctx context.Context, instance Instance) error {
-	fmt.Printf("Initiating deletion for temporary instance %q (ID: %s)...\n", instance.Name, instance.ID)
+	c.logf("Initiating deletion for temporary instance %q (ID: %s)...\n", instance.Name, instance.ID)
 	err := c.api.DefaultAPI.DeleteInstance(ctx, c.projectID, c.region, instance.ID).Execute()
 	if err != nil {
 		return fmt.Errorf("delete instance %q: %w", instance.Name, err)
 	}
 
-	fmt.Printf("Waiting for temporary instance %q deletion to complete...\n", instance.Name)
+	c.logf("Waiting for temporary instance %q deletion to complete...\n", instance.Name)
 	_, err = wait.DeleteInstanceWaitHandler(ctx, c.api.DefaultAPI, c.projectID, c.region, instance.ID).WaitWithContext(ctx)
 	if err != nil {
 		return fmt.Errorf("wait for deletion of instance %q: %w", instance.Name, err)
 	}
-	fmt.Printf("Temporary instance %q successfully deleted.\n", instance.Name)
+	c.logf("Temporary instance %q successfully deleted.\n", instance.Name)
 
 	return nil
 }

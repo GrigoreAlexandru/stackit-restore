@@ -15,17 +15,20 @@ const (
 	StepPending StepStatus = iota
 	StepRunning
 	StepCompleted
+	StepCompletedWithWarnings
 	StepFailed
 )
 
 var (
 	iconCompleted = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42")).Render("[✓]")
+	iconWarning   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220")).Render("[!]")
 	iconRunning   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39")).Render("[>]")
 	iconPending   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[ ]")
 	iconFailed    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")).Render("[✗]")
 
 	styleTitleRunning   = lipgloss.NewStyle().Bold(true)
-	styleTitleCompleted = lipgloss.NewStyle()
+	styleTitleCompleted = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	styleTitleWarning   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
 	styleTitlePending   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	styleTitleFailed    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 )
@@ -97,6 +100,25 @@ func (st *StepTracker) CompleteStep(index int) {
 	)
 }
 
+func (st *StepTracker) CompleteStepWithWarning(index int, warning string) {
+	if index < 0 || index >= len(st.Statuses) {
+		return
+	}
+	st.Statuses[index] = StepCompletedWithWarnings
+	fmt.Fprintf(
+		st.writer,
+		"%s Step %d/%d Completed with Warnings: %s\n",
+		iconWarning,
+		index+1,
+		len(st.Steps),
+		styleTitleWarning.Render(st.Steps[index]),
+	)
+	if warning != "" {
+		fmt.Fprintf(st.writer, "   Notice: %s\n", warning)
+	}
+	fmt.Fprintln(st.writer)
+}
+
 func (st *StepTracker) FailStep(index int, err error) {
 	if index >= 0 && index < len(st.Statuses) {
 		st.Statuses[index] = StepFailed
@@ -125,6 +147,9 @@ func (st *StepTracker) RenderSummary() {
 		case StepCompleted:
 			icon = iconCompleted
 			styledTitle = styleTitleCompleted.Render(step)
+		case StepCompletedWithWarnings:
+			icon = iconWarning
+			styledTitle = styleTitleWarning.Render(step)
 		case StepRunning:
 			icon = iconRunning
 			styledTitle = styleTitleRunning.Render(step)

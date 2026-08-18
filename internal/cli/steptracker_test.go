@@ -36,9 +36,17 @@ func TestStepTracker(t *testing.T) {
 		t.Errorf("expected step 1 completion, got: %s", out)
 	}
 
-	// Step 2 start & fail
+	// Step 2 start & complete with warnings
 	buf.Reset()
 	tracker.StartStep(1)
+	tracker.CompleteStepWithWarning(1, "missing pg_stat_kcache extension ignored")
+	out = buf.String()
+	if !strings.Contains(out, "Step 2/2 Completed with Warnings:") || !strings.Contains(out, "missing pg_stat_kcache") {
+		t.Errorf("expected step 2 warning notice, got: %s", out)
+	}
+
+	// Step 2 fail check
+	buf.Reset()
 	tracker.FailStep(1, errors.New("connection timeout"))
 	out = buf.String()
 	if !strings.Contains(out, "Step 2/2 Failed:") || !strings.Contains(out, "connection timeout") {

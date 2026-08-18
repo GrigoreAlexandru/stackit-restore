@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -275,9 +276,6 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			}
 		}
 
-		tracker := NewStepTracker("PostgreSQL Dump Execution", steps)
-		tracker.PrintHeader()
-
 		contextDetails := map[string]string{
 			"Instance": srcInst.Name,
 			"Database": srcDB.Name,
@@ -287,16 +285,30 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			contextDetails["PIT"] = opts.PITParsed.Format(time.RFC3339)
 		}
 
-		tracker.StartStep(0)
-		artifact, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
+		var artifact api.DumpArtifact
+		err = RunWithStepView(
+			ctx,
+			"PostgreSQL Dump Execution",
+			steps,
+			"dump",
+			contextDetails,
+			func(execCtx context.Context, reporter StepReporter) error {
+				reporter.StartStep(0)
+				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
+				if err != nil {
+					reporter.FailStep(0, err)
+					return err
+				}
+				for i := range steps {
+					reporter.CompleteStep(i)
+				}
+				artifact = dump
+				return nil
+			},
+		)
 		if err != nil {
-			return handleExecutionError("dump", contextDetails, tracker, 0, err)
+			return err
 		}
-
-		for i := range steps {
-			tracker.CompleteStep(i)
-		}
-		tracker.RenderSummary()
 
 		fmt.Printf("Dump created successfully: %s\n", artifact.Path)
 		return nil
@@ -328,26 +340,37 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			steps := []string{
 				fmt.Sprintf("Restore dump file %s into %s / %s", filepath.Base(opts.DumpFile), dstInst.Name, dstDB.Name),
 			}
-			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
-			tracker.PrintHeader()
-			tracker.StartStep(0)
-
-			dumpArtifact := api.DumpArtifact{
-				Name:         filepath.Base(opts.DumpFile),
-				Path:         opts.DumpFile,
-				Mode:         api.DumpModeStandard,
-				InstanceName: dstInst.Name,
-				InstanceID:   dstInst.ID,
-				DatabaseName: dstDB.Name,
-				CreatedAt:    time.Now().UTC(),
-			}
-			if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dumpArtifact); err != nil {
-				return handleExecutionError("restore", contextDetails, tracker, 0, err)
-			}
-			tracker.CompleteStep(0)
-			tracker.RenderSummary()
-			fmt.Printf("Restore completed successfully from file: %s\n", opts.DumpFile)
-			return nil
+			return RunWithStepView(
+				ctx,
+				"PostgreSQL Restore Execution",
+				steps,
+				"restore",
+				contextDetails,
+				func(execCtx context.Context, reporter StepReporter) error {
+					reporter.StartStep(0)
+					dumpArtifact := api.DumpArtifact{
+						Name:         filepath.Base(opts.DumpFile),
+						Path:         opts.DumpFile,
+						Mode:         api.DumpModeStandard,
+						InstanceName: dstInst.Name,
+						InstanceID:   dstInst.ID,
+						DatabaseName: dstDB.Name,
+						CreatedAt:    time.Now().UTC(),
+					}
+					if err := apiClient.RestoreDump(execCtx, dstInst, dstDB, dumpArtifact); err != nil {
+						if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+							reporter.CompleteStepWithWarning(0, "non-critical extension/role warnings ignored")
+							fmt.Printf("Restore completed with warnings from file: %s\n", opts.DumpFile)
+							return nil
+						}
+						reporter.FailStep(0, err)
+						return err
+					}
+					reporter.CompleteStep(0)
+					fmt.Printf("Restore completed successfully from file: %s\n", opts.DumpFile)
+					return nil
+				},
+			)
 
 		case "backup", "stackit_backup":
 			srcInst, err := findInstance(opts.Instance)
@@ -382,18 +405,37 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				"Delete temporary STACKIT clone instance",
 				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
 			}
-			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
-			tracker.PrintHeader()
-			tracker.StartStep(0)
 
-			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, targetBackup.CreatedAt)
+			var artifact api.DumpArtifact
+			err = RunWithStepView(
+				ctx,
+				"PostgreSQL Restore Execution",
+				steps,
+				"restore",
+				contextDetails,
+				func(execCtx context.Context, reporter StepReporter) error {
+					reporter.StartStep(0)
+					dump, err := apiClient.RestoreFromPIT(execCtx, dstInst, dstDB, targetBackup.CreatedAt)
+					if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.FailStep(0, err)
+						return err
+					}
+					for i := 0; i < len(steps)-1; i++ {
+						reporter.CompleteStep(i)
+					}
+					lastStepIdx := len(steps) - 1
+					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
+					} else {
+						reporter.CompleteStep(lastStepIdx)
+					}
+					artifact = dump
+					return nil
+				},
+			)
 			if err != nil {
-				return handleExecutionError("restore", contextDetails, tracker, 0, err)
+				return err
 			}
-			for i := range steps {
-				tracker.CompleteStep(i)
-			}
-			tracker.RenderSummary()
 			fmt.Printf("Restore from backup completed successfully using dump: %s\n", artifact.Path)
 			return nil
 
@@ -418,18 +460,37 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				"Delete temporary STACKIT clone instance",
 				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
 			}
-			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
-			tracker.PrintHeader()
-			tracker.StartStep(0)
 
-			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, *opts.PITParsed)
+			var artifact api.DumpArtifact
+			err = RunWithStepView(
+				ctx,
+				"PostgreSQL Restore Execution",
+				steps,
+				"restore",
+				contextDetails,
+				func(execCtx context.Context, reporter StepReporter) error {
+					reporter.StartStep(0)
+					dump, err := apiClient.RestoreFromPIT(execCtx, dstInst, dstDB, *opts.PITParsed)
+					if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.FailStep(0, err)
+						return err
+					}
+					for i := 0; i < len(steps)-1; i++ {
+						reporter.CompleteStep(i)
+					}
+					lastStepIdx := len(steps) - 1
+					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
+					} else {
+						reporter.CompleteStep(lastStepIdx)
+					}
+					artifact = dump
+					return nil
+				},
+			)
 			if err != nil {
-				return handleExecutionError("restore", contextDetails, tracker, 0, err)
+				return err
 			}
-			for i := range steps {
-				tracker.CompleteStep(i)
-			}
-			tracker.RenderSummary()
 			fmt.Printf("Restore from PIT completed successfully using dump: %s\n", artifact.Path)
 			return nil
 
@@ -496,9 +557,6 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			}
 		}
 
-		tracker := NewStepTracker("PostgreSQL Database Sync Execution", steps)
-		tracker.PrintHeader()
-
 		contextDetails := map[string]string{
 			"SourceInstance": srcInst.Name,
 			"SourceDatabase": srcDB.Name,
@@ -510,29 +568,50 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			contextDetails["PIT"] = opts.PITParsed.Format(time.RFC3339)
 		}
 
-		tracker.StartStep(0)
-		dump, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
+		var artifact api.DumpArtifact
+		err = RunWithStepView(
+			ctx,
+			"PostgreSQL Database Sync Execution",
+			steps,
+			"sync",
+			contextDetails,
+			func(execCtx context.Context, reporter StepReporter) error {
+				reporter.StartStep(0)
+				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
+				if err != nil {
+					reporter.FailStep(0, err)
+					return err
+				}
+
+				if mode == api.DumpModeStandard {
+					reporter.CompleteStep(0)
+				} else {
+					reporter.CompleteStep(0)
+					reporter.CompleteStep(1)
+					reporter.CompleteStep(2)
+				}
+
+				restoreStepIdx := len(steps) - 1
+				reporter.StartStep(restoreStepIdx)
+				if err := apiClient.RestoreDump(execCtx, dstInst, dstDB, dump); err != nil {
+					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.CompleteStepWithWarning(restoreStepIdx, "non-critical extension/role warnings ignored")
+						artifact = dump
+						return nil
+					}
+					reporter.FailStep(restoreStepIdx, err)
+					return err
+				}
+				reporter.CompleteStep(restoreStepIdx)
+				artifact = dump
+				return nil
+			},
+		)
 		if err != nil {
-			return handleExecutionError("sync", contextDetails, tracker, 0, err)
+			return err
 		}
 
-		if mode == api.DumpModeStandard {
-			tracker.CompleteStep(0)
-		} else {
-			tracker.CompleteStep(0)
-			tracker.CompleteStep(1)
-			tracker.CompleteStep(2)
-		}
-
-		restoreStepIdx := len(steps) - 1
-		tracker.StartStep(restoreStepIdx)
-		if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dump); err != nil {
-			return handleExecutionError("sync", contextDetails, tracker, restoreStepIdx, err)
-		}
-		tracker.CompleteStep(restoreStepIdx)
-		tracker.RenderSummary()
-
-		fmt.Printf("Sync completed successfully from %s / %s into %s / %s using dump: %s\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name, dump.Path)
+		fmt.Printf("Sync completed successfully from %s / %s into %s / %s using dump: %s\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name, artifact.Path)
 		return nil
 
 	default:
@@ -668,10 +747,6 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		}
 	}
 
-	postgres.ResetExecutionBuffer()
-	tracker := NewStepTracker("PostgreSQL Dump Execution", steps)
-	tracker.PrintHeader()
-
 	contextDetails := map[string]string{
 		"Instance": a.sourceSelection.Instance.Name,
 		"Database": a.sourceSelection.Database.Name,
@@ -681,27 +756,42 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
 	}
 
-	var pit *time.Time
-	if a.selectedDumpMode == api.DumpModePointInTime {
-		pit = &a.selectedPIT
-	}
-
-	tracker.StartStep(0)
-	artifact, err := a.apiClient.CreateDump(
+	var artifact api.DumpArtifact
+	err := RunWithStepView(
 		ctx,
-		a.sourceSelection.Instance,
-		a.sourceSelection.Database,
-		a.selectedDumpMode,
-		pit,
+		"PostgreSQL Dump Execution",
+		steps,
+		"dump",
+		contextDetails,
+		func(execCtx context.Context, reporter StepReporter) error {
+			var pit *time.Time
+			if a.selectedDumpMode == api.DumpModePointInTime {
+				pit = &a.selectedPIT
+			}
+
+			reporter.StartStep(0)
+			dump, err := a.apiClient.CreateDump(
+				execCtx,
+				a.sourceSelection.Instance,
+				a.sourceSelection.Database,
+				a.selectedDumpMode,
+				pit,
+			)
+			if err != nil {
+				reporter.FailStep(0, err)
+				return err
+			}
+
+			for i := range steps {
+				reporter.CompleteStep(i)
+			}
+			artifact = dump
+			return nil
+		},
 	)
 	if err != nil {
-		return handleExecutionError("dump", contextDetails, tracker, 0, err)
+		return err
 	}
-
-	for i := range steps {
-		tracker.CompleteStep(i)
-	}
-	tracker.RenderSummary()
 
 	fmt.Printf("Dump created successfully for %s / %s: %s\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, artifact.Path)
 	return nil
@@ -824,69 +914,97 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		}
 	}
 
-	postgres.ResetExecutionBuffer()
-	tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
-	tracker.PrintHeader()
-
 	contextDetails := map[string]string{
 		"DestinationInstance": a.destSelection.Instance.Name,
 		"DestinationDatabase": a.destSelection.Database.Name,
 		"SourceType":          string(a.selectedRestoreSource),
 	}
 
-	switch a.selectedRestoreSource {
-	case restoreSourceDumpFile:
-		contextDetails["DumpFile"] = a.selectedDump.Path
-		tracker.StartStep(0)
-		if err := a.apiClient.RestoreDump(ctx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump); err != nil {
-			return handleExecutionError("restore", contextDetails, tracker, 0, err)
-		}
-		tracker.CompleteStep(0)
-		tracker.RenderSummary()
-		fmt.Printf("Restore completed successfully from dump %s into %s / %s\n", a.selectedDump.Path, a.destSelection.Instance.Name, a.destSelection.Database.Name)
-		return nil
+	var generatedDump api.DumpArtifact
+	err := RunWithStepView(
+		ctx,
+		"PostgreSQL Restore Execution",
+		steps,
+		"restore",
+		contextDetails,
+		func(execCtx context.Context, reporter StepReporter) error {
+			switch a.selectedRestoreSource {
+			case restoreSourceDumpFile:
+				contextDetails["DumpFile"] = a.selectedDump.Path
+				reporter.StartStep(0)
+				if err := a.apiClient.RestoreDump(execCtx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump); err != nil {
+					if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+						reporter.CompleteStepWithWarning(0, "non-critical extension/role warnings ignored")
+						generatedDump = a.selectedDump
+						return nil
+					}
+					reporter.FailStep(0, err)
+					return err
+				}
+				reporter.CompleteStep(0)
+				generatedDump = a.selectedDump
+				return nil
 
-	case restoreSourceCloudBackup:
-		contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
-		contextDetails["Backup"] = a.selectedBackup.Name
-		tracker.StartStep(0)
-		dump, err := a.apiClient.RestoreFromPIT(
-			ctx,
-			a.destSelection.Instance,
-			a.destSelection.Database,
-			a.selectedBackup.CreatedAt,
-		)
-		if err != nil {
-			return handleExecutionError("restore", contextDetails, tracker, 0, err)
-		}
-		for i := range steps {
-			tracker.CompleteStep(i)
-		}
-		tracker.RenderSummary()
-		fmt.Printf("Restore from backup completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
-		return nil
+			case restoreSourceCloudBackup:
+				contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+				contextDetails["Backup"] = a.selectedBackup.Name
+				reporter.StartStep(0)
+				dump, err := a.apiClient.RestoreFromPIT(
+					execCtx,
+					a.destSelection.Instance,
+					a.destSelection.Database,
+					a.selectedBackup.CreatedAt,
+				)
+				if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
+					reporter.FailStep(0, err)
+					return err
+				}
+				for i := 0; i < len(steps)-1; i++ {
+					reporter.CompleteStep(i)
+				}
+				lastStepIdx := len(steps) - 1
+				if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+					reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
+				} else {
+					reporter.CompleteStep(lastStepIdx)
+				}
+				generatedDump = dump
+				return nil
 
-	case restoreSourceCloudPIT:
-		contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
-		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
-		tracker.StartStep(0)
-		dump, err := a.apiClient.RestoreFromPIT(
-			ctx,
-			a.destSelection.Instance,
-			a.destSelection.Database,
-			a.selectedPIT,
-		)
-		if err != nil {
-			return handleExecutionError("restore", contextDetails, tracker, 0, err)
-		}
-		for i := range steps {
-			tracker.CompleteStep(i)
-		}
-		tracker.RenderSummary()
-		fmt.Printf("Restore from PIT completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
-		return nil
+			case restoreSourceCloudPIT:
+				contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+				contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+				reporter.StartStep(0)
+				dump, err := a.apiClient.RestoreFromPIT(
+					execCtx,
+					a.destSelection.Instance,
+					a.destSelection.Database,
+					a.selectedPIT,
+				)
+				if err != nil && !errors.Is(err, postgres.ErrRestoreWithWarnings) {
+					reporter.FailStep(0, err)
+					return err
+				}
+				for i := 0; i < len(steps)-1; i++ {
+					reporter.CompleteStep(i)
+				}
+				lastStepIdx := len(steps) - 1
+				if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+					reporter.CompleteStepWithWarning(lastStepIdx, "non-critical extension/role warnings ignored")
+				} else {
+					reporter.CompleteStep(lastStepIdx)
+				}
+				generatedDump = dump
+				return nil
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return err
 	}
 
+	fmt.Printf("Restore completed successfully into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, generatedDump.Path)
 	return nil
 }
 
@@ -1002,10 +1120,6 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		}
 	}
 
-	postgres.ResetExecutionBuffer()
-	tracker := NewStepTracker("PostgreSQL Database Sync Execution", steps)
-	tracker.PrintHeader()
-
 	contextDetails := map[string]string{
 		"SourceInstance": a.sourceSelection.Instance.Name,
 		"SourceDatabase": a.sourceSelection.Database.Name,
@@ -1017,43 +1131,64 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
 	}
 
-	var pit *time.Time
-	if a.selectedDumpMode == api.DumpModePointInTime {
-		pit = &a.selectedPIT
-	}
-
-	tracker.StartStep(0)
-	dump, err := a.apiClient.CreateDump(
+	var artifact api.DumpArtifact
+	err := RunWithStepView(
 		ctx,
-		a.sourceSelection.Instance,
-		a.sourceSelection.Database,
-		a.selectedDumpMode,
-		pit,
+		"PostgreSQL Database Sync Execution",
+		steps,
+		"sync",
+		contextDetails,
+		func(execCtx context.Context, reporter StepReporter) error {
+			var pit *time.Time
+			if a.selectedDumpMode == api.DumpModePointInTime {
+				pit = &a.selectedPIT
+			}
+
+			reporter.StartStep(0)
+			dump, err := a.apiClient.CreateDump(
+				execCtx,
+				a.sourceSelection.Instance,
+				a.sourceSelection.Database,
+				a.selectedDumpMode,
+				pit,
+			)
+			if err != nil {
+				reporter.FailStep(0, err)
+				return err
+			}
+
+			if a.selectedDumpMode == api.DumpModeStandard {
+				reporter.CompleteStep(0)
+			} else {
+				reporter.CompleteStep(0)
+				reporter.CompleteStep(1)
+				reporter.CompleteStep(2)
+			}
+
+			restoreStepIdx := len(steps) - 1
+			reporter.StartStep(restoreStepIdx)
+			if err := a.apiClient.RestoreDump(
+				execCtx,
+				a.destSelection.Instance,
+				a.destSelection.Database,
+				dump,
+			); err != nil {
+				if errors.Is(err, postgres.ErrRestoreWithWarnings) {
+					reporter.CompleteStepWithWarning(restoreStepIdx, "non-critical extension/role warnings ignored")
+					artifact = dump
+					return nil
+				}
+				reporter.FailStep(restoreStepIdx, err)
+				return err
+			}
+			reporter.CompleteStep(restoreStepIdx)
+			artifact = dump
+			return nil
+		},
 	)
 	if err != nil {
-		return handleExecutionError("sync", contextDetails, tracker, 0, err)
+		return err
 	}
-
-	if a.selectedDumpMode == api.DumpModeStandard {
-		tracker.CompleteStep(0)
-	} else {
-		tracker.CompleteStep(0)
-		tracker.CompleteStep(1)
-		tracker.CompleteStep(2)
-	}
-
-	restoreStepIdx := len(steps) - 1
-	tracker.StartStep(restoreStepIdx)
-	if err := a.apiClient.RestoreDump(
-		ctx,
-		a.destSelection.Instance,
-		a.destSelection.Database,
-		dump,
-	); err != nil {
-		return handleExecutionError("sync", contextDetails, tracker, restoreStepIdx, err)
-	}
-	tracker.CompleteStep(restoreStepIdx)
-	tracker.RenderSummary()
 
 	fmt.Printf(
 		"Sync completed successfully from %s / %s into %s / %s using dump: %s\n",
@@ -1061,7 +1196,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		a.sourceSelection.Database.Name,
 		a.destSelection.Instance.Name,
 		a.destSelection.Database.Name,
-		dump.Path,
+		artifact.Path,
 	)
 	return nil
 }

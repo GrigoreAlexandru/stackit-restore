@@ -121,3 +121,57 @@ func TestGetLocalEndpointFailsWhenMissing(t *testing.T) {
 		t.Fatal("expected error when LOCAL_HOST/LOCAL_PORT are unset, got nil")
 	}
 }
+
+func TestIsIgnorableRestoreWarning(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected bool
+	}{
+		{
+			name:     "missing pg_stat_kcache extension error",
+			output:   "pg_restore: creating EXTENSION \"pg_stat_kcache\"\npg_restore: error: could not execute query: ERROR: extension \"pg_stat_kcache\" is not available\npg_restore: warning: errors were ignored during processing",
+			expected: true,
+		},
+		{
+			name:     "missing extension control file",
+			output:   "ERROR: could not open extension control file \"/usr/share/postgresql/extension/pg_stat_kcache.control\": No such file or directory\nwarning: errors were ignored during processing",
+			expected: true,
+		},
+		{
+			name:     "permission denied to create extension",
+			output:   "ERROR: permission denied to create extension \"pg_stat_statements\"\nHINT: Must be superuser to create this extension.",
+			expected: true,
+		},
+		{
+			name:     "fatal connection failure",
+			output:   "pg_restore: error: connection to server at \"127.0.0.1\", port 5432 failed: Connection refused\npg_restore: error: could not connect to server",
+			expected: false,
+		},
+		{
+			name:     "fatal password authentication failure",
+			output:   "FATAL: password authentication failed for user \"postgres\"",
+			expected: false,
+		},
+		{
+			name:     "fatal database does not exist",
+			output:   "FATAL: database \"nonexistent\" does not exist",
+			expected: false,
+		},
+		{
+			name:     "empty output",
+			output:   "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsIgnorableRestoreWarning(tt.output)
+			if got != tt.expected {
+				t.Errorf("IsIgnorableRestoreWarning() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+

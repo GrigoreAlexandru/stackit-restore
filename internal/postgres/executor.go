@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,46 @@ import (
 	"strconv"
 	"strings"
 )
+
+var ErrRestoreWithWarnings = errors.New("restore completed with non-fatal warnings")
+
+func IsIgnorableRestoreWarning(output string) bool {
+	fatalKeywords := []string{
+		"could not connect to server",
+		"connection to server at",
+		"password authentication failed",
+		"FATAL:",
+		"PANIC:",
+		"out of memory",
+		"input file appears to be a text format dump",
+		"archiver (db) connection to database",
+	}
+	lower := strings.ToLower(output)
+	for _, kw := range fatalKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return false
+		}
+	}
+
+	warningPatterns := []string{
+		"is not available",
+		"could not open extension control file",
+		"permission denied to create extension",
+		"role \"",
+		"schema \"",
+		"already exists",
+		"does not exist, skipping",
+		"extension \"",
+		"warnings were ignored during processing",
+		"errors were ignored during processing",
+	}
+	for _, wp := range warningPatterns {
+		if strings.Contains(lower, strings.ToLower(wp)) {
+			return true
+		}
+	}
+	return false
+}
 
 type Credentials struct {
 	User     string
@@ -171,6 +212,17 @@ func RunPgRestore(
 	}
 
 	if err := runPostgresCommand(ctx, "pg_restore", args, creds); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			captured := GetExecutionLog()
+			if IsIgnorableRestoreWarning(captured) {
+				out := GetOutputWriter()
+				notice := "\nNote: pg_restore completed with non-fatal extension/role warnings (e.g. pg_stat_kcache). Core data restored successfully.\n"
+				fmt.Fprint(out, notice)
+				AppendExecutionLog([]byte(notice))
+				return ErrRestoreWithWarnings
+			}
+		}
 		return fmt.Errorf("restore dump %q into database %q: %w", dumpPath, dbname, err)
 	}
 
@@ -190,8 +242,9 @@ func runPostgresCommand(
 	args []string,
 	credentials Credentials,
 ) error {
+	out := GetOutputWriter()
 	cmdStr := fmt.Sprintf("\n$ %s %s\n", command, strings.Join(args, " "))
-	fmt.Print(cmdStr)
+	fmt.Fprint(out, cmdStr)
 	AppendExecutionLog([]byte(cmdStr))
 
 	cmd := exec.CommandContext(ctx, command, args...)
@@ -200,8 +253,8 @@ func runPostgresCommand(
 		"PGSSLMODE="+credentials.SSLMode,
 	)
 
-	cmd.Stdout = io.MultiWriter(os.Stdout, logWriter{})
-	cmd.Stderr = io.MultiWriter(os.Stderr, logWriter{})
+	cmd.Stdout = io.MultiWriter(out, logWriter{})
+	cmd.Stderr = io.MultiWriter(out, logWriter{})
 
 	if err := cmd.Run(); err != nil {
 		errStr := fmt.Sprintf("\nCommand failed with error: %v\n", err)

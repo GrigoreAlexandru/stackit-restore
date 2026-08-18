@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +12,26 @@ import (
 )
 
 var (
-	executionLogMu  sync.Mutex
-	executionBuffer bytes.Buffer
+	executionLogMu     sync.Mutex
+	executionBuffer    bytes.Buffer
+	customOutputWriter io.Writer
+	customOutputMu     sync.RWMutex
 )
+
+func SetCustomOutputWriter(w io.Writer) {
+	customOutputMu.Lock()
+	defer customOutputMu.Unlock()
+	customOutputWriter = w
+}
+
+func GetOutputWriter() io.Writer {
+	customOutputMu.RLock()
+	defer customOutputMu.RUnlock()
+	if customOutputWriter != nil {
+		return customOutputWriter
+	}
+	return os.Stdout
+}
 
 func ResetExecutionBuffer() {
 	executionLogMu.Lock()
