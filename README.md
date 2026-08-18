@@ -30,6 +30,9 @@ An interactive Go CLI tool for PostgreSQL workflows across [STACKIT](https://www
   - `--clean --if-exists`: Drops existing database objects before recreating them, avoiding duplicate table/key errors on restore.
   - `--no-owner`: Do not output commands to set ownership of objects to match the original database. This prevents permission errors when restoring across different database users/roles (e.g. from cloud instances into local or staging).
   - `--no-privileges` (alias `--no-acl`): Prevents restoring access privileges (GRANT/REVOKE commands) from the source database, preserving the destination database's security and role configurations without permission conflicts.
+- **Step-by-Step Progress Tracking & Checkmarks**: All planned execution steps are listed upfront and dynamically updated with styled status indicators (`[✓]` Completed, `[>]` In Progress, `[ ]` Pending, `[✗]` Failed).
+- **Live Command Output Streaming**: `pg_dump`, `pg_restore`, and STACKIT provisioning outputs stream live directly underneath each active step.
+- **Automated Error Logging (`dumps/logs/`)**: When errors occur during execution, a detailed error log with full captured command outputs and execution context is automatically generated in `dumps/logs/error_<TIMESTAMP>_<ACTION>.log`.
 - **Confirmation & Explanation**: Plain-English execution plan presented prior to executing actions.
 
 ---

@@ -172,6 +172,32 @@ func ExecuteWithOptions(ctx context.Context, apiClient API, opts Options) error 
 	return Execute(ctx, apiClient)
 }
 
+func getDumpDir() string {
+	dir := os.Getenv("POSTGRES_DUMP_DIR")
+	if strings.TrimSpace(dir) == "" {
+		return "dumps"
+	}
+	return dir
+}
+
+func handleExecutionError(actionName string, contextDetails map[string]string, tracker *StepTracker, failedStep int, err error) error {
+	if tracker != nil {
+		tracker.FailStep(failedStep, err)
+		tracker.RenderSummary()
+	}
+
+	logPath, logErr := postgres.WriteErrorLog(getDumpDir(), actionName, contextDetails, err)
+
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("ERROR: Operation failed.")
+	if logErr == nil && logPath != "" {
+		fmt.Printf("A detailed error log has been written to: %s\n", logPath)
+	}
+	fmt.Println(strings.Repeat("=", 80))
+
+	return err
+}
+
 func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 	instances, err := apiClient.GetInstances(ctx)
 	if err != nil {
@@ -203,6 +229,8 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		return api.Database{}, fmt.Errorf("database %q not found in instance %q", dbName, inst.Name)
 	}
 
+	postgres.ResetExecutionBuffer()
+
 	switch action(opts.Action) {
 	case actionDump:
 		srcInst, err := findInstance(opts.Instance)
@@ -224,20 +252,52 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			return fmt.Errorf("dump mode %q is not supported for local database instance: only 'live' dump is supported on local", mode)
 		}
 
-		fmt.Println("================================================================================")
-		fmt.Println("PostgreSQL Dump Summary & Explanation")
-		fmt.Println("================================================================================")
-		fmt.Printf("Action:   Dump (%s)\n", mode)
-		fmt.Printf("Target:   %s / %s\n", srcInst.Name, srcDB.Name)
-		if opts.PITParsed != nil {
-			fmt.Printf("PIT:      %s\n", opts.PITParsed.Format(time.RFC3339))
+		var steps []string
+		if mode == api.DumpModeStandard {
+			steps = []string{
+				fmt.Sprintf("Extract live database dump from %s / %s", srcInst.Name, srcDB.Name),
+			}
+		} else if mode == api.DumpModeReplica {
+			steps = []string{
+				fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", srcInst.Name),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", srcDB.Name),
+				"Delete temporary STACKIT clone instance",
+			}
+		} else {
+			pitStr := "PIT"
+			if opts.PITParsed != nil {
+				pitStr = opts.PITParsed.Format(time.RFC3339)
+			}
+			steps = []string{
+				fmt.Sprintf("Provision temporary clone at %s in STACKIT", pitStr),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", srcDB.Name),
+				"Delete temporary STACKIT clone instance",
+			}
 		}
-		fmt.Println("================================================================================")
 
+		tracker := NewStepTracker("PostgreSQL Dump Execution", steps)
+		tracker.PrintHeader()
+
+		contextDetails := map[string]string{
+			"Instance": srcInst.Name,
+			"Database": srcDB.Name,
+			"Mode":     string(mode),
+		}
+		if opts.PITParsed != nil {
+			contextDetails["PIT"] = opts.PITParsed.Format(time.RFC3339)
+		}
+
+		tracker.StartStep(0)
 		artifact, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
 		if err != nil {
-			return fmt.Errorf("create dump: %w", err)
+			return handleExecutionError("dump", contextDetails, tracker, 0, err)
 		}
+
+		for i := range steps {
+			tracker.CompleteStep(i)
+		}
+		tracker.RenderSummary()
+
 		fmt.Printf("Dump created successfully: %s\n", artifact.Path)
 		return nil
 
@@ -256,17 +316,22 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			return fmt.Errorf("destination instance %q is unavailable: missing %s in environment", dstInst.Name, hint)
 		}
 
-		fmt.Println("================================================================================")
-		fmt.Println("PostgreSQL Restore Summary & Explanation")
-		fmt.Println("================================================================================")
-		fmt.Printf("Action:      Restore (%s)\n", opts.Mode)
-		fmt.Printf("Destination: %s / %s\n", dstInst.Name, dstDB.Name)
+		contextDetails := map[string]string{
+			"DestinationInstance": dstInst.Name,
+			"DestinationDatabase": dstDB.Name,
+			"Mode":                opts.Mode,
+		}
 
 		switch opts.Mode {
 		case "dump_file":
-			fmt.Printf("Source File: %s\n", opts.DumpFile)
-			fmt.Println("================================================================================")
-			fmt.Printf("Restoring from dump file %q into %s / %s...\n", opts.DumpFile, dstInst.Name, dstDB.Name)
+			contextDetails["DumpFile"] = opts.DumpFile
+			steps := []string{
+				fmt.Sprintf("Restore dump file %s into %s / %s", filepath.Base(opts.DumpFile), dstInst.Name, dstDB.Name),
+			}
+			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
+			tracker.PrintHeader()
+			tracker.StartStep(0)
+
 			dumpArtifact := api.DumpArtifact{
 				Name:         filepath.Base(opts.DumpFile),
 				Path:         opts.DumpFile,
@@ -277,8 +342,10 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				CreatedAt:    time.Now().UTC(),
 			}
 			if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dumpArtifact); err != nil {
-				return fmt.Errorf("restore dump file: %w", err)
+				return handleExecutionError("restore", contextDetails, tracker, 0, err)
 			}
+			tracker.CompleteStep(0)
+			tracker.RenderSummary()
 			fmt.Printf("Restore completed successfully from file: %s\n", opts.DumpFile)
 			return nil
 
@@ -306,13 +373,27 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				return fmt.Errorf("backup %q not found for instance %q", opts.Backup, srcInst.Name)
 			}
 
-			fmt.Printf("Cloud Source: %s (Backup: %s)\n", srcInst.Name, targetBackup.Name)
-			fmt.Println("================================================================================")
-			fmt.Printf("Restoring backup %q (%s) into %s / %s...\n", targetBackup.Name, targetBackup.CreatedAt.Format(time.RFC3339), dstInst.Name, dstDB.Name)
+			contextDetails["SourceInstance"] = srcInst.Name
+			contextDetails["Backup"] = targetBackup.Name
+
+			steps := []string{
+				fmt.Sprintf("Provision temporary clone from backup %s in STACKIT", targetBackup.Name),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", dstDB.Name),
+				"Delete temporary STACKIT clone instance",
+				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
+			}
+			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
+			tracker.PrintHeader()
+			tracker.StartStep(0)
+
 			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, targetBackup.CreatedAt)
 			if err != nil {
-				return fmt.Errorf("restore from backup: %w", err)
+				return handleExecutionError("restore", contextDetails, tracker, 0, err)
 			}
+			for i := range steps {
+				tracker.CompleteStep(i)
+			}
+			tracker.RenderSummary()
 			fmt.Printf("Restore from backup completed successfully using dump: %s\n", artifact.Path)
 			return nil
 
@@ -328,13 +409,27 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				return fmt.Errorf("missing parsed PIT timestamp")
 			}
 
-			fmt.Printf("Cloud Source: %s (PIT: %s)\n", srcInst.Name, opts.PITParsed.Format(time.RFC3339))
-			fmt.Println("================================================================================")
-			fmt.Printf("Restoring from PIT datetime %s into %s / %s...\n", opts.PITParsed.Format(time.RFC3339), dstInst.Name, dstDB.Name)
+			contextDetails["SourceInstance"] = srcInst.Name
+			contextDetails["PIT"] = opts.PITParsed.Format(time.RFC3339)
+
+			steps := []string{
+				fmt.Sprintf("Provision temporary clone at %s in STACKIT", opts.PITParsed.Format(time.RFC3339)),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", dstDB.Name),
+				"Delete temporary STACKIT clone instance",
+				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
+			}
+			tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
+			tracker.PrintHeader()
+			tracker.StartStep(0)
+
 			artifact, err := apiClient.RestoreFromPIT(ctx, dstInst, dstDB, *opts.PITParsed)
 			if err != nil {
-				return fmt.Errorf("restore from PIT: %w", err)
+				return handleExecutionError("restore", contextDetails, tracker, 0, err)
 			}
+			for i := range steps {
+				tracker.CompleteStep(i)
+			}
+			tracker.RenderSummary()
 			fmt.Printf("Restore from PIT completed successfully using dump: %s\n", artifact.Path)
 			return nil
 
@@ -375,26 +470,67 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			return fmt.Errorf("sync mode %q is not supported when source instance is 'local': only 'live' sync is supported on local", mode)
 		}
 
-		fmt.Println("================================================================================")
-		fmt.Println("PostgreSQL Sync Summary & Explanation")
-		fmt.Println("================================================================================")
-		fmt.Printf("Action:      Sync (%s)\n", mode)
-		fmt.Printf("Source:      %s / %s\n", srcInst.Name, srcDB.Name)
-		fmt.Printf("Destination: %s / %s\n", dstInst.Name, dstDB.Name)
-		if opts.PITParsed != nil {
-			fmt.Printf("PIT:         %s\n", opts.PITParsed.Format(time.RFC3339))
+		var steps []string
+		if mode == api.DumpModeStandard {
+			steps = []string{
+				fmt.Sprintf("Extract live dump from source database %s / %s", srcInst.Name, srcDB.Name),
+				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
+			}
+		} else if mode == api.DumpModeReplica {
+			steps = []string{
+				fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", srcInst.Name),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", srcDB.Name),
+				"Delete temporary STACKIT clone instance",
+				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
+			}
+		} else {
+			pitStr := "PIT"
+			if opts.PITParsed != nil {
+				pitStr = opts.PITParsed.Format(time.RFC3339)
+			}
+			steps = []string{
+				fmt.Sprintf("Provision temporary clone at %s in STACKIT", pitStr),
+				fmt.Sprintf("Extract dump from temporary clone (%s)", srcDB.Name),
+				"Delete temporary STACKIT clone instance",
+				fmt.Sprintf("Restore dump into target database %s / %s", dstInst.Name, dstDB.Name),
+			}
 		}
-		fmt.Println("================================================================================")
 
-		fmt.Printf("Extracting dump from %s / %s and restoring into %s / %s...\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name)
+		tracker := NewStepTracker("PostgreSQL Database Sync Execution", steps)
+		tracker.PrintHeader()
+
+		contextDetails := map[string]string{
+			"SourceInstance": srcInst.Name,
+			"SourceDatabase": srcDB.Name,
+			"TargetInstance": dstInst.Name,
+			"TargetDatabase": dstDB.Name,
+			"Mode":           string(mode),
+		}
+		if opts.PITParsed != nil {
+			contextDetails["PIT"] = opts.PITParsed.Format(time.RFC3339)
+		}
+
+		tracker.StartStep(0)
 		dump, err := apiClient.CreateDump(ctx, srcInst, srcDB, mode, opts.PITParsed)
 		if err != nil {
-			return fmt.Errorf("extract dump from source: %w", err)
+			return handleExecutionError("sync", contextDetails, tracker, 0, err)
 		}
 
-		if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dump); err != nil {
-			return fmt.Errorf("restore dump into destination: %w", err)
+		if mode == api.DumpModeStandard {
+			tracker.CompleteStep(0)
+		} else {
+			tracker.CompleteStep(0)
+			tracker.CompleteStep(1)
+			tracker.CompleteStep(2)
 		}
+
+		restoreStepIdx := len(steps) - 1
+		tracker.StartStep(restoreStepIdx)
+		if err := apiClient.RestoreDump(ctx, dstInst, dstDB, dump); err != nil {
+			return handleExecutionError("sync", contextDetails, tracker, restoreStepIdx, err)
+		}
+		tracker.CompleteStep(restoreStepIdx)
+		tracker.RenderSummary()
 
 		fmt.Printf("Sync completed successfully from %s / %s into %s / %s using dump: %s\n", srcInst.Name, srcDB.Name, dstInst.Name, dstDB.Name, dump.Path)
 		return nil
@@ -513,15 +649,44 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		return nil
 	}
 
-	fmt.Println("\n================================================================================")
-	fmt.Println("PostgreSQL Dump Execution")
-	fmt.Println("================================================================================")
+	var steps []string
+	if a.selectedDumpMode == api.DumpModeStandard {
+		steps = []string{
+			fmt.Sprintf("Extract live database dump from %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name),
+		}
+	} else if a.selectedDumpMode == api.DumpModeReplica {
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", a.sourceSelection.Instance.Name),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+		}
+	} else {
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone at %s in STACKIT", a.selectedPIT.Format(time.RFC3339)),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+		}
+	}
+
+	postgres.ResetExecutionBuffer()
+	tracker := NewStepTracker("PostgreSQL Dump Execution", steps)
+	tracker.PrintHeader()
+
+	contextDetails := map[string]string{
+		"Instance": a.sourceSelection.Instance.Name,
+		"Database": a.sourceSelection.Database.Name,
+		"Mode":     string(a.selectedDumpMode),
+	}
+	if a.selectedDumpMode == api.DumpModePointInTime {
+		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+	}
 
 	var pit *time.Time
 	if a.selectedDumpMode == api.DumpModePointInTime {
 		pit = &a.selectedPIT
 	}
 
+	tracker.StartStep(0)
 	artifact, err := a.apiClient.CreateDump(
 		ctx,
 		a.sourceSelection.Instance,
@@ -530,12 +695,15 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		pit,
 	)
 	if err != nil {
-		return err
+		return handleExecutionError("dump", contextDetails, tracker, 0, err)
 	}
 
-	fmt.Println("\n================================================================================")
+	for i := range steps {
+		tracker.CompleteStep(i)
+	}
+	tracker.RenderSummary()
+
 	fmt.Printf("Dump created successfully for %s / %s: %s\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name, artifact.Path)
-	fmt.Println("================================================================================")
 	return nil
 }
 
@@ -634,21 +802,54 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		return nil
 	}
 
-	fmt.Println("\n================================================================================")
-	fmt.Println("PostgreSQL Restore Execution")
-	fmt.Println("================================================================================")
+	var steps []string
+	switch a.selectedRestoreSource {
+	case restoreSourceDumpFile:
+		steps = []string{
+			fmt.Sprintf("Restore dump file %s into %s / %s", filepath.Base(a.selectedDump.Path), a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	case restoreSourceCloudBackup:
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone from backup %s in STACKIT", a.selectedBackup.Name),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.destSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	case restoreSourceCloudPIT:
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone at %s in STACKIT", a.selectedPIT.Format(time.RFC3339)),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.destSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	}
+
+	postgres.ResetExecutionBuffer()
+	tracker := NewStepTracker("PostgreSQL Restore Execution", steps)
+	tracker.PrintHeader()
+
+	contextDetails := map[string]string{
+		"DestinationInstance": a.destSelection.Instance.Name,
+		"DestinationDatabase": a.destSelection.Database.Name,
+		"SourceType":          string(a.selectedRestoreSource),
+	}
 
 	switch a.selectedRestoreSource {
 	case restoreSourceDumpFile:
+		contextDetails["DumpFile"] = a.selectedDump.Path
+		tracker.StartStep(0)
 		if err := a.apiClient.RestoreDump(ctx, a.destSelection.Instance, a.destSelection.Database, a.selectedDump); err != nil {
-			return err
+			return handleExecutionError("restore", contextDetails, tracker, 0, err)
 		}
-		fmt.Println("\n================================================================================")
+		tracker.CompleteStep(0)
+		tracker.RenderSummary()
 		fmt.Printf("Restore completed successfully from dump %s into %s / %s\n", a.selectedDump.Path, a.destSelection.Instance.Name, a.destSelection.Database.Name)
-		fmt.Println("================================================================================")
 		return nil
 
 	case restoreSourceCloudBackup:
+		contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+		contextDetails["Backup"] = a.selectedBackup.Name
+		tracker.StartStep(0)
 		dump, err := a.apiClient.RestoreFromPIT(
 			ctx,
 			a.destSelection.Instance,
@@ -656,14 +857,19 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 			a.selectedBackup.CreatedAt,
 		)
 		if err != nil {
-			return err
+			return handleExecutionError("restore", contextDetails, tracker, 0, err)
 		}
-		fmt.Println("\n================================================================================")
+		for i := range steps {
+			tracker.CompleteStep(i)
+		}
+		tracker.RenderSummary()
 		fmt.Printf("Restore from backup completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
-		fmt.Println("================================================================================")
 		return nil
 
 	case restoreSourceCloudPIT:
+		contextDetails["CloudInstance"] = a.selectedCloudInstance.Name
+		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+		tracker.StartStep(0)
 		dump, err := a.apiClient.RestoreFromPIT(
 			ctx,
 			a.destSelection.Instance,
@@ -671,11 +877,13 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 			a.selectedPIT,
 		)
 		if err != nil {
-			return err
+			return handleExecutionError("restore", contextDetails, tracker, 0, err)
 		}
-		fmt.Println("\n================================================================================")
+		for i := range steps {
+			tracker.CompleteStep(i)
+		}
+		tracker.RenderSummary()
 		fmt.Printf("Restore from PIT completed into %s / %s using dump: %s\n", a.destSelection.Instance.Name, a.destSelection.Database.Name, dump.Path)
-		fmt.Println("================================================================================")
 		return nil
 	}
 
@@ -768,16 +976,53 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		return nil
 	}
 
-	fmt.Println("\n================================================================================")
-	fmt.Println("PostgreSQL Database Sync Execution")
-	fmt.Println("================================================================================")
+	var steps []string
+	if a.selectedDumpMode == api.DumpModeStandard {
+		steps = []string{
+			fmt.Sprintf("Extract live dump from source database %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name),
+			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	} else if a.selectedDumpMode == api.DumpModeReplica {
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", a.sourceSelection.Instance.Name),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	} else {
+		pitStr := "PIT"
+		if a.selectedDumpMode == api.DumpModePointInTime {
+			pitStr = a.selectedPIT.Format(time.RFC3339)
+		}
+		steps = []string{
+			fmt.Sprintf("Provision temporary clone at %s in STACKIT", pitStr),
+			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
+			"Delete temporary STACKIT clone instance",
+			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
+		}
+	}
+
+	postgres.ResetExecutionBuffer()
+	tracker := NewStepTracker("PostgreSQL Database Sync Execution", steps)
+	tracker.PrintHeader()
+
+	contextDetails := map[string]string{
+		"SourceInstance": a.sourceSelection.Instance.Name,
+		"SourceDatabase": a.sourceSelection.Database.Name,
+		"TargetInstance": a.destSelection.Instance.Name,
+		"TargetDatabase": a.destSelection.Database.Name,
+		"Mode":           string(a.selectedDumpMode),
+	}
+	if a.selectedDumpMode == api.DumpModePointInTime {
+		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+	}
 
 	var pit *time.Time
 	if a.selectedDumpMode == api.DumpModePointInTime {
 		pit = &a.selectedPIT
 	}
 
-	fmt.Printf("\n[Phase 1/2] Extracting dump from source %s / %s...\n", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name)
+	tracker.StartStep(0)
 	dump, err := a.apiClient.CreateDump(
 		ctx,
 		a.sourceSelection.Instance,
@@ -786,20 +1031,30 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		pit,
 	)
 	if err != nil {
-		return fmt.Errorf("dump from source db: %w", err)
+		return handleExecutionError("sync", contextDetails, tracker, 0, err)
 	}
 
-	fmt.Printf("\n[Phase 2/2] Restoring extracted dump into target database %s / %s...\n", a.destSelection.Instance.Name, a.destSelection.Database.Name)
+	if a.selectedDumpMode == api.DumpModeStandard {
+		tracker.CompleteStep(0)
+	} else {
+		tracker.CompleteStep(0)
+		tracker.CompleteStep(1)
+		tracker.CompleteStep(2)
+	}
+
+	restoreStepIdx := len(steps) - 1
+	tracker.StartStep(restoreStepIdx)
 	if err := a.apiClient.RestoreDump(
 		ctx,
 		a.destSelection.Instance,
 		a.destSelection.Database,
 		dump,
 	); err != nil {
-		return fmt.Errorf("restore dump into destination db: %w", err)
+		return handleExecutionError("sync", contextDetails, tracker, restoreStepIdx, err)
 	}
+	tracker.CompleteStep(restoreStepIdx)
+	tracker.RenderSummary()
 
-	fmt.Println("\n================================================================================")
 	fmt.Printf(
 		"Sync completed successfully from %s / %s into %s / %s using dump: %s\n",
 		a.sourceSelection.Instance.Name,
@@ -808,7 +1063,6 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		a.destSelection.Database.Name,
 		dump.Path,
 	)
-	fmt.Println("================================================================================")
 	return nil
 }
 

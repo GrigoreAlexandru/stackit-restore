@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -176,13 +177,22 @@ func RunPgRestore(
 	return nil
 }
 
+type logWriter struct{}
+
+func (l logWriter) Write(p []byte) (n int, err error) {
+	AppendExecutionLog(p)
+	return len(p), nil
+}
+
 func runPostgresCommand(
 	ctx context.Context,
 	command string,
 	args []string,
 	credentials Credentials,
 ) error {
-	fmt.Printf("\n$ %s %s\n", command, strings.Join(args, " "))
+	cmdStr := fmt.Sprintf("\n$ %s %s\n", command, strings.Join(args, " "))
+	fmt.Print(cmdStr)
+	AppendExecutionLog([]byte(cmdStr))
 
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Env = append(os.Environ(),
@@ -190,10 +200,12 @@ func runPostgresCommand(
 		"PGSSLMODE="+credentials.SSLMode,
 	)
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(os.Stdout, logWriter{})
+	cmd.Stderr = io.MultiWriter(os.Stderr, logWriter{})
 
 	if err := cmd.Run(); err != nil {
+		errStr := fmt.Sprintf("\nCommand failed with error: %v\n", err)
+		AppendExecutionLog([]byte(errStr))
 		return fmt.Errorf("run %s: %w", command, err)
 	}
 
