@@ -139,8 +139,9 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 	}
 
 	class := instResp.Storage.GetClass()
+	instSize := instResp.Storage.GetSize()
 
-	sizeGB := int64(1)
+	sizeGB := instSize
 	backups, bErr := c.GetBackups(ctx, instance)
 	if bErr == nil && len(backups) > 0 {
 		var matchedBackup *Backup
@@ -156,11 +157,17 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 			matchedBackup = &backups[0]
 		}
 		if matchedBackup != nil && matchedBackup.Size > 0 {
-			sizeGB = (matchedBackup.Size + (1 << 30) - 1) / (1 << 30)
+			backupGB := (matchedBackup.Size + (1 << 30) - 1) / (1 << 30)
+			if backupGB > sizeGB {
+				sizeGB = backupGB
+			}
 		}
 	}
-	if sizeGB < 1 {
-		sizeGB = 1
+	if sizeGB < instSize {
+		sizeGB = instSize
+	}
+	if sizeGB < 10 {
+		sizeGB = 10
 	}
 
 	overrides := postgresflex.CloneInstanceOverrides{

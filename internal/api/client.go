@@ -119,12 +119,18 @@ func (c *Client) CreateDump(
 			return DumpArtifact{}, fmt.Errorf("dump from replica is not supported by provider %q", p.Name())
 		}
 
-		latestBackupTime, err := c.getLatestBackupTime(ctx, p, instance)
-		if err != nil {
-			return DumpArtifact{}, err
+		backupTime := time.Time{}
+		if pit != nil {
+			backupTime = *pit
+		} else {
+			latest, err := c.getLatestBackupTime(ctx, p, instance)
+			if err != nil {
+				return DumpArtifact{}, err
+			}
+			backupTime = latest
 		}
 
-		clone, err := p.CreateClone(ctx, instance, latestBackupTime)
+		clone, err := p.CreateClone(ctx, instance, backupTime)
 		if err != nil {
 			return DumpArtifact{}, err
 		}

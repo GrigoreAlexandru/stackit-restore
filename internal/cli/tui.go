@@ -704,7 +704,12 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 			return err
 		}
 
-		if a.selectedDumpMode == api.DumpModePointInTime {
+		if a.selectedDumpMode == api.DumpModeReplica {
+			if err := a.selectBackupForInstance(a.sourceSelection.Instance); err != nil {
+				return err
+			}
+			a.selectedPIT = a.selectedBackup.CreatedAt
+		} else if a.selectedDumpMode == api.DumpModePointInTime {
 			if err := a.promptPITTimestamp(a.sourceSelection.Instance); err != nil {
 				return err
 			}
@@ -734,8 +739,12 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 			fmt.Sprintf("Extract live database dump from %s / %s", a.sourceSelection.Instance.Name, a.sourceSelection.Database.Name),
 		}
 	} else if a.selectedDumpMode == api.DumpModeReplica {
+		backupName := a.selectedBackup.Name
+		if backupName == "" {
+			backupName = "selected backup"
+		}
 		steps = []string{
-			fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", a.sourceSelection.Instance.Name),
+			fmt.Sprintf("Provision temporary clone from backup %s (%s) in STACKIT", backupName, a.sourceSelection.Instance.Name),
 			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
 			"Delete temporary STACKIT clone instance",
 		}
@@ -754,6 +763,8 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 	}
 	if a.selectedDumpMode == api.DumpModePointInTime {
 		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+	} else if a.selectedDumpMode == api.DumpModeReplica && a.selectedBackup.Name != "" {
+		contextDetails["Backup"] = a.selectedBackup.Name
 	}
 
 	var artifact api.DumpArtifact
@@ -765,7 +776,7 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		contextDetails,
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
-			if a.selectedDumpMode == api.DumpModePointInTime {
+			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {
 				pit = &a.selectedPIT
 			}
 
@@ -1070,7 +1081,12 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 			return err
 		}
 
-		if a.selectedDumpMode == api.DumpModePointInTime {
+		if a.selectedDumpMode == api.DumpModeReplica {
+			if err := a.selectBackupForInstance(a.sourceSelection.Instance); err != nil {
+				return err
+			}
+			a.selectedPIT = a.selectedBackup.CreatedAt
+		} else if a.selectedDumpMode == api.DumpModePointInTime {
 			if err := a.promptPITTimestamp(a.sourceSelection.Instance); err != nil {
 				return err
 			}
@@ -1101,8 +1117,12 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
 		}
 	} else if a.selectedDumpMode == api.DumpModeReplica {
+		backupName := a.selectedBackup.Name
+		if backupName == "" {
+			backupName = "selected backup"
+		}
 		steps = []string{
-			fmt.Sprintf("Provision temporary clone from latest backup of %s in STACKIT", a.sourceSelection.Instance.Name),
+			fmt.Sprintf("Provision temporary clone from backup %s (%s) in STACKIT", backupName, a.sourceSelection.Instance.Name),
 			fmt.Sprintf("Extract dump from temporary clone (%s)", a.sourceSelection.Database.Name),
 			"Delete temporary STACKIT clone instance",
 			fmt.Sprintf("Restore dump into target database %s / %s", a.destSelection.Instance.Name, a.destSelection.Database.Name),
@@ -1129,6 +1149,8 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 	}
 	if a.selectedDumpMode == api.DumpModePointInTime {
 		contextDetails["PIT"] = a.selectedPIT.Format(time.RFC3339)
+	} else if a.selectedDumpMode == api.DumpModeReplica && a.selectedBackup.Name != "" {
+		contextDetails["Backup"] = a.selectedBackup.Name
 	}
 
 	var artifact api.DumpArtifact
@@ -1140,7 +1162,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		contextDetails,
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
-			if a.selectedDumpMode == api.DumpModePointInTime {
+			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {
 				pit = &a.selectedPIT
 			}
 
