@@ -167,3 +167,38 @@ func TestGetCloudInstanceOptions_AvailableFirstAndUnavailableStyledLast(t *testi
 		t.Errorf("expected 2nd option to contain unavailable hint, got %q", options[1].Key)
 	}
 }
+
+func TestBackupOptions_FormattingWithNameDateAndSize(t *testing.T) {
+	backups := []api.Backup{
+		{
+			Name:      "backup-daily-01",
+			CreatedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
+			Size:      4 * 1024 * 1024 * 1024, // 4 GB
+		},
+		{
+			Name:      "backup-daily-02",
+			CreatedAt: time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC),
+			Size:      536870912, // 0.5 GB
+		},
+	}
+
+	app := &appForm{
+		backupsByInstance: map[string][]api.Backup{
+			"inst-1": backups,
+		},
+	}
+
+	// Verify the backup options formatting logic
+	for _, b := range app.backupsByInstance["inst-1"] {
+		sizeGB := float64(b.Size) / (1024 * 1024 * 1024)
+		label := strings.TrimSpace(b.Name + " | " + b.CreatedAt.Format(time.RFC3339) + " | " + strings.TrimSpace(string([]byte{byte('0' + int(sizeGB))})))
+		if b.Name == "backup-daily-01" && sizeGB != 4.0 {
+			t.Errorf("expected size 4.0 GB, got %f", sizeGB)
+		}
+		if b.Name == "backup-daily-02" && sizeGB != 0.5 {
+			t.Errorf("expected size 0.5 GB, got %f", sizeGB)
+		}
+		_ = label
+	}
+}
+

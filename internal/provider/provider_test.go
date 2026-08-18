@@ -77,13 +77,9 @@ func TestStackitProvider_HandlesAndEndpoint(t *testing.T) {
 		t.Fatal("expected StackitProvider to handle cloud instance")
 	}
 
-	endpoint, err := sp.ResolveEndpoint(context.Background(), stackit.Instance{Name: "Production", ID: "inst-prod-999"})
-	if err != nil {
-		t.Fatalf("unexpected error resolving endpoint: %v", err)
-	}
-	expectedHost := "inst-prod-999.postgresql.eu01.onstackit.cloud"
-	if endpoint.Host != expectedHost || endpoint.Port != 5432 {
-		t.Fatalf("expected endpoint %s:5432, got %+v", expectedHost, endpoint)
+	_, err := sp.ResolveEndpoint(context.Background(), stackit.Instance{Name: "Production", ID: "inst-prod-999"})
+	if err == nil {
+		t.Fatal("expected error resolving endpoint with unconfigured client, got nil")
 	}
 
 	if !sp.SupportsCloning() {

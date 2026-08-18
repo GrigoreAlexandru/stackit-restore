@@ -40,6 +40,7 @@ type Instance struct {
 type Backup struct {
 	Name      string
 	CreatedAt time.Time
+	Size      int64
 }
 
 type Database struct {
@@ -106,6 +107,7 @@ func (c *Client) GetBackups(ctx context.Context, instance Instance) ([]Backup, e
 		backups = append(backups, Backup{
 			Name:      backup.Name,
 			CreatedAt: createdAt,
+			Size:      backup.Size,
 		})
 	}
 
@@ -131,11 +133,50 @@ func (c *Client) GetDatabases(ctx context.Context, instance Instance) ([]Databas
 }
 
 func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Time) (Instance, error) {
-	payload := postgresflex.CloneInstancePayload{
-		PointInTime: pit,
+	instResp, err := c.api.DefaultAPI.GetInstance(ctx, c.projectID, c.region, instance.ID).Execute()
+	if err != nil {
+		return Instance{}, fmt.Errorf("get instance %q (ID: %s) for clone configuration: %w", instance.Name, instance.ID, err)
 	}
 
-	c.logf("Initiating STACKIT clone from instance %q (ID: %s) at %s...\n", instance.Name, instance.ID, pit.Format(time.RFC3339))
+	class := instResp.Storage.GetClass()
+
+	sizeGB := int64(1)
+	backups, bErr := c.GetBackups(ctx, instance)
+	if bErr == nil && len(backups) > 0 {
+		var matchedBackup *Backup
+		for _, b := range backups {
+			if !b.CreatedAt.After(pit) {
+				if matchedBackup == nil || b.CreatedAt.After(matchedBackup.CreatedAt) {
+					bCopy := b
+					matchedBackup = &bCopy
+				}
+			}
+		}
+		if matchedBackup == nil {
+			matchedBackup = &backups[0]
+		}
+		if matchedBackup != nil && matchedBackup.Size > 0 {
+			sizeGB = (matchedBackup.Size + (1 << 30) - 1) / (1 << 30)
+		}
+	}
+	if sizeGB < 1 {
+		sizeGB = 1
+	}
+
+	overrides := postgresflex.CloneInstanceOverrides{
+		Size: sizeGB,
+	}
+	if class != "" {
+		overrides.Class = &class
+	}
+
+	payload := postgresflex.CloneInstancePayload{
+		InstanceOverrides: overrides,
+		PointInTime:       pit,
+	}
+
+	c.logf("Initiating STACKIT clone from instance %q (ID: %s) at %s (Size: %d GB, Class: %s)...\n",
+		instance.Name, instance.ID, pit.Format(time.RFC3339), sizeGB, class)
 	clone, err := c.api.DefaultAPI.CloneInstance(ctx, c.projectID, c.region, instance.ID).CloneInstancePayload(payload).Execute()
 	if err != nil {
 		return Instance{}, fmt.Errorf("create clone instance name %q: %w", instance.Name, err)
@@ -177,5 +218,13 @@ func (c *Client) GetInstanceEndpoint(ctx context.Context, instance Instance) (st
 		return "", 0, fmt.Errorf("get instance details %q: %w", instance.Name, err)
 	}
 
-	return response.ConnectionInfo.Write.Host, response.ConnectionInfo.Write.Port, nil
+	host := response.ConnectionInfo.Write.Host
+	port := response.ConnectionInfo.Write.Port
+	if host == "" {
+		return "", 0, fmt.Errorf("instance %q (ID: %s) did not return host in connection info", instance.Name, instance.ID)
+	}
+	if port == 0 {
+		port = 5432
+	}
+	return host, port, nil
 }

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/stackit"
 )
 
@@ -60,11 +59,16 @@ func (p *StackitProvider) GetBackups(ctx context.Context, instance stackit.Insta
 }
 
 func (p *StackitProvider) ResolveEndpoint(ctx context.Context, instance stackit.Instance) (Endpoint, error) {
-	_ = ctx
-	host := postgres.BuildInstanceHost(instance.ID, p.region)
+	if p.client == nil {
+		return Endpoint{}, fmt.Errorf("STACKIT client is not configured")
+	}
+	host, port, err := p.client.GetInstanceEndpoint(ctx, instance)
+	if err != nil {
+		return Endpoint{}, err
+	}
 	return Endpoint{
 		Host: host,
-		Port: 5432,
+		Port: port,
 	}, nil
 }
 

@@ -1358,7 +1358,8 @@ func (a *appForm) selectBackupForInstance(inst api.Instance) error {
 
 	options := make([]huh.Option[api.Backup], len(backups))
 	for i, backup := range backups {
-		label := fmt.Sprintf("%s (%s)", backup.Name, backup.CreatedAt.Format(time.RFC3339))
+		sizeGB := float64(backup.Size) / (1024 * 1024 * 1024)
+		label := fmt.Sprintf("%s | %s | %.2f GB", backup.Name, backup.CreatedAt.Format(time.RFC3339), sizeGB)
 		options[i] = huh.NewOption(label, backup)
 	}
 
