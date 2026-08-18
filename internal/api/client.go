@@ -110,9 +110,14 @@ func (c *Client) CreateDump(
 		return DumpArtifact{}, err
 	}
 
+	sourceCreds, err := postgres.ResolveCredentials(instance.Name)
+	if err != nil {
+		return DumpArtifact{}, err
+	}
+
 	switch mode {
 	case DumpModeStandard:
-		return c.createDumpFromInstance(ctx, p, instance, database, mode)
+		return c.createDumpFromInstance(ctx, p, instance, database, mode, sourceCreds, instance)
 
 	case DumpModeReplica:
 		if !p.SupportsCloning() {
@@ -140,7 +145,7 @@ func (c *Client) CreateDump(
 			cloneProvider = p
 		}
 
-		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode)
+		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode, sourceCreds, instance)
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
@@ -178,7 +183,7 @@ func (c *Client) CreateDump(
 			cloneProvider = p
 		}
 
-		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode)
+		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode, sourceCreds, instance)
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		deleteErr := p.DeleteInstance(cleanupCtx, clone)
 		cancel()
@@ -264,21 +269,18 @@ func (c *Client) getLatestBackupTime(ctx context.Context, p provider.Provider, i
 func (c *Client) createDumpFromInstance(
 	ctx context.Context,
 	p provider.Provider,
-	instance Instance,
+	targetInstance Instance,
 	database Database,
 	mode DumpMode,
+	credentials postgres.Credentials,
+	sourceInstance Instance,
 ) (DumpArtifact, error) {
-	endpoint, err := p.ResolveEndpoint(ctx, instance)
+	endpoint, err := p.ResolveEndpoint(ctx, targetInstance)
 	if err != nil {
 		return DumpArtifact{}, err
 	}
 
-	credentials, err := postgres.ResolveCredentials(instance.Name)
-	if err != nil {
-		return DumpArtifact{}, err
-	}
-
-	artifact := c.artifacts.NewDumpArtifact(instance.ID, instance.Name, database.Name, mode)
+	artifact := c.artifacts.NewDumpArtifact(sourceInstance.ID, sourceInstance.Name, database.Name, mode)
 
 	if err := postgres.RunPgDump(ctx, endpoint.Host, endpoint.Port, database.Name, artifact.Path, credentials); err != nil {
 		return DumpArtifact{}, err
