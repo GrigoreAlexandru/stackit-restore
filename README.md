@@ -26,8 +26,10 @@ An interactive Go CLI tool for PostgreSQL workflows across [STACKIT](https://www
 - **Dynamic Per-Instance Credentials**: Credentials resolved dynamically from environment variables formatted as `[INSTANCE_NAME]_USER` and `[INSTANCE_NAME]_PASS` (e.g. `PRODUCTION_USER` & `PRODUCTION_PASS`).
 - **Credential-Based Availability**: Any instance can be used as source or destination as long as credentials are configured for it. Unconfigured instances are visible in the TUI menu but marked as `(unavailable: missing <NAME>_USER and <NAME>_PASS)`.
 - **Local Database Support**: `local` is available as a first-class option using `LOCAL_USER` and `LOCAL_PASS` (guarded for live operations only).
-- **STACKIT Replica & PIT Cloning**: Clone PostgreSQL instances from backups or specific Point-In-Time (PIT) timestamps before dumping.
-- **Custom Binary `.dump` & `pg_restore`**: Custom binary dump format (`pg_dump -Fc`) restored with `pg_restore` for max performance and safety (`--clean`, `--if-exists`, `--no-owner`, `--no-privileges`).
+- **Custom Binary `.dump` & Safe `pg_restore`**: Custom binary dump format (`pg_dump -Fc`) restored with `pg_restore` using safe production defaults:
+  - `--clean --if-exists`: Drops existing database objects before recreating them, avoiding duplicate table/key errors on restore.
+  - `--no-owner`: Do not output commands to set ownership of objects to match the original database. This prevents permission errors when restoring across different database users/roles (e.g. from cloud instances into local or staging).
+  - `--no-privileges` (alias `--no-acl`): Prevents restoring access privileges (GRANT/REVOKE commands) from the source database, preserving the destination database's security and role configurations without permission conflicts.
 - **Confirmation & Explanation**: Plain-English execution plan presented prior to executing actions.
 
 ---

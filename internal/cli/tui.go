@@ -103,14 +103,14 @@ func (a *appForm) buildExplanation() string {
 		switch a.selectedRestoreSource {
 		case restoreSourceDumpFile:
 			return fmt.Sprintf(
-				"Reads local .dump file %q and restores it into target database %q of instance %q using pg_restore (--clean).",
+				"Reads local .dump file %q and restores it into target database %q of instance %q using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them to prevent duplicate table/key errors.\n- --no-owner: Prevents setting object ownership to match the original database, avoiding permission errors across different database users.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE), preserving the target database's existing security configurations.",
 				a.selectedDump.Path,
 				a.destSelection.Database.Name,
 				a.destSelection.Instance.Name,
 			)
 		case restoreSourceCloudBackup:
 			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone in STACKIT from backup %q (%s) of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean).",
+				"Creates a temporary PostgreSQL clone in STACKIT from backup %q (%s) of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them.\n- --no-owner: Prevents setting object ownership to match the original database.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE), preserving target security settings.",
 				a.selectedBackup.Name,
 				a.selectedBackup.CreatedAt.Format(time.RFC3339),
 				a.selectedCloudInstance.Name,
@@ -119,7 +119,7 @@ func (a *appForm) buildExplanation() string {
 			)
 		case restoreSourceCloudPIT:
 			return fmt.Sprintf(
-				"Creates a temporary PostgreSQL clone in STACKIT from point-in-time %s of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean).",
+				"Creates a temporary PostgreSQL clone in STACKIT from point-in-time %s of %q, extracts dump, deletes clone, and restores into target database %q of instance %q using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them.\n- --no-owner: Prevents setting object ownership to match the original database.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE), preserving target security settings.",
 				a.selectedPIT.Format(time.RFC3339),
 				a.selectedCloudInstance.Name,
 				a.destSelection.Database.Name,
@@ -131,7 +131,7 @@ func (a *appForm) buildExplanation() string {
 		switch a.selectedDumpMode {
 		case api.DumpModeStandard:
 			return fmt.Sprintf(
-				"Extracts live dump from %s / %s and restores it directly into %s / %s using pg_restore (--clean).",
+				"Extracts live dump from %s / %s and restores it directly into %s / %s using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them.\n- --no-owner: Prevents setting object ownership to match the source database, avoiding user mismatch errors.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE), keeping target permissions intact.",
 				a.sourceSelection.Instance.Name,
 				a.sourceSelection.Database.Name,
 				a.destSelection.Instance.Name,
@@ -139,7 +139,7 @@ func (a *appForm) buildExplanation() string {
 			)
 		case api.DumpModeReplica:
 			return fmt.Sprintf(
-				"Creates temporary STACKIT clone from latest backup of %s, extracts dump of %s, deletes clone, and restores into %s / %s.",
+				"Creates temporary STACKIT clone from latest backup of %s, extracts dump of %s, deletes clone, and restores into %s / %s using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them.\n- --no-owner: Prevents setting object ownership to match the source database.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE).",
 				a.sourceSelection.Instance.Name,
 				a.sourceSelection.Database.Name,
 				a.destSelection.Instance.Name,
@@ -147,7 +147,7 @@ func (a *appForm) buildExplanation() string {
 			)
 		case api.DumpModePointInTime:
 			return fmt.Sprintf(
-				"Creates temporary STACKIT clone from point-in-time %s of %s, extracts dump of %s, deletes clone, and restores into %s / %s.",
+				"Creates temporary STACKIT clone from point-in-time %s of %s, extracts dump of %s, deletes clone, and restores into %s / %s using pg_restore (--clean --if-exists --no-owner --no-privileges --verbose).\n\nFlags Explanation:\n- --clean --if-exists: Drops existing database objects before recreating them.\n- --no-owner: Prevents setting object ownership to match the source database.\n- --no-privileges: Skips restoring access privileges (GRANT/REVOKE).",
 				a.selectedPIT.Format(time.RFC3339),
 				a.sourceSelection.Instance.Name,
 				a.sourceSelection.Database.Name,
