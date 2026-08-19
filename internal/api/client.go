@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/config"
@@ -156,10 +156,7 @@ func (c *Client) CreateDump(
 
 		if dumpErr != nil {
 			if deleteErr != nil {
-				return DumpArtifact{}, errors.Join(
-					dumpErr,
-					fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
-				)
+				return DumpArtifact{}, fmt.Errorf("dump extraction failed: %w (temporary clone cleanup: %v)", dumpErr, deleteErr)
 			}
 			return DumpArtifact{}, dumpErr
 		}
@@ -197,10 +194,7 @@ func (c *Client) CreateDump(
 
 		if dumpErr != nil {
 			if deleteErr != nil {
-				return DumpArtifact{}, errors.Join(
-					dumpErr,
-					fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr),
-				)
+				return DumpArtifact{}, fmt.Errorf("dump extraction failed: %w (temporary clone cleanup: %v)", dumpErr, deleteErr)
 			}
 			return DumpArtifact{}, dumpErr
 		}
@@ -224,6 +218,10 @@ func (c *Client) RestoreDump(
 	database Database,
 	dump DumpArtifact,
 ) error {
+	if strings.TrimSpace(dump.Path) == "" {
+		return fmt.Errorf("cannot restore: dump artifact path is empty")
+	}
+
 	p, err := c.router.Route(instance)
 	if err != nil {
 		return err

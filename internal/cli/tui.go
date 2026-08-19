@@ -301,7 +301,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
 				deleteForbidden := false
 				if err != nil {
-					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -435,7 +435,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModeReplica, &targetBackup.CreatedAt)
 					deleteForbidden := false
 					if err != nil {
-						if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+						if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 							deleteForbidden = true
 						} else {
 							reporter.FailStep(0, err)
@@ -505,7 +505,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModePointInTime, opts.PITParsed)
 					deleteForbidden := false
 					if err != nil {
-						if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+						if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 							deleteForbidden = true
 						} else {
 							reporter.FailStep(0, err)
@@ -627,7 +627,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
 				deleteForbidden := false
 				if err != nil {
-					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -846,7 +846,7 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 			)
 			deleteForbidden := false
 			if err != nil {
-				if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+				if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 					deleteForbidden = true
 				} else {
 					reporter.FailStep(0, err)
@@ -1046,7 +1046,7 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 				)
 				deleteForbidden := false
 				if err != nil {
-					if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -1244,7 +1244,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 			)
 			deleteForbidden := false
 			if err != nil {
-				if errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err) {
+				if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 					deleteForbidden = true
 				} else {
 					reporter.FailStep(0, err)

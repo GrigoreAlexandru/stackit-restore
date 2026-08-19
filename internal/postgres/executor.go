@@ -198,6 +198,10 @@ func RunPgRestore(
 	dumpPath string,
 	creds Credentials,
 ) error {
+	if strings.TrimSpace(dumpPath) == "" {
+		return fmt.Errorf("cannot execute pg_restore: dump file path is empty")
+	}
+
 	args := []string{
 		"--host", host,
 		"--port", fmt.Sprintf("%d", port),

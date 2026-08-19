@@ -202,3 +202,79 @@ func TestBackupOptions_FormattingWithNameDateAndSize(t *testing.T) {
 	}
 }
 
+func TestGetDumpOptions_Formatting(t *testing.T) {
+	t1 := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	dumps := []api.DumpArtifact{
+		{
+			Path:         "/dumps/test.dump",
+			Mode:         api.DumpModeStandard,
+			InstanceName: "prod",
+			DatabaseName: "app_db",
+			CreatedAt:    t1,
+		},
+	}
+
+	app := &appForm{
+		dumpArtifacts: dumps,
+	}
+
+	options := app.getDumpOptions()
+	if len(options) != 1 {
+		t.Fatalf("expected 1 option, got %d", len(options))
+	}
+	expectedLabel := "2026-08-19T12:00:00Z | dump_from_live | prod | app_db"
+	if options[0].Key != expectedLabel {
+		t.Fatalf("expected key %q, got %q", expectedLabel, options[0].Key)
+	}
+}
+
+func TestAppForm_BuildExplanation(t *testing.T) {
+	app := &appForm{
+		selectedAction: actionDump,
+		sourceSelection: databaseSelection{
+			Instance: api.Instance{Name: "prod"},
+			Database: api.Database{Name: "app_db"},
+		},
+		selectedDumpMode: api.DumpModeStandard,
+	}
+
+	exp := app.buildExplanation()
+	if !strings.Contains(exp, "Runs pg_dump directly on live database") || !strings.Contains(exp, "prod") {
+		t.Errorf("expected live dump explanation, got %q", exp)
+	}
+
+	app.selectedDumpMode = api.DumpModeReplica
+	app.selectedBackup = api.Backup{Name: "daily-bkp"}
+	exp = app.buildExplanation()
+	if !strings.Contains(exp, "Creates a temporary PostgreSQL clone") || !strings.Contains(exp, "prod") {
+		t.Errorf("expected backup-based dump explanation, got %q", exp)
+	}
+
+	app.selectedDumpMode = api.DumpModePointInTime
+	app.selectedPIT = time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	exp = app.buildExplanation()
+	if !strings.Contains(exp, "point-in-time") {
+		t.Errorf("expected PIT dump explanation, got %q", exp)
+	}
+
+	app.selectedAction = actionRestore
+	app.destSelection = databaseSelection{
+		Instance: api.Instance{Name: "local"},
+		Database: api.Database{Name: "dev_db"},
+	}
+	app.selectedRestoreSource = restoreSourceDumpFile
+	app.selectedDump = api.DumpArtifact{Path: "/dumps/app.dump"}
+	exp = app.buildExplanation()
+	if !strings.Contains(exp, "Reads local .dump file") || !strings.Contains(exp, "app.dump") {
+		t.Errorf("expected dump file restore explanation, got %q", exp)
+	}
+
+	app.selectedAction = actionSync
+	app.selectedDumpMode = api.DumpModeStandard
+	exp = app.buildExplanation()
+	if !strings.Contains(exp, "Extracts live dump from prod / app_db") || !strings.Contains(exp, "local / dev_db") {
+		t.Errorf("expected live sync explanation, got %q", exp)
+	}
+}
+
+

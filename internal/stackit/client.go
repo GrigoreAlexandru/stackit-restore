@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +32,18 @@ func IsDeleteForbidden(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "403") || strings.Contains(msg, "forbidden")
+}
+
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var oapiErr *oapierror.GenericOpenAPIError
+	if errors.As(err, &oapiErr) && oapiErr.StatusCode == 404 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
 }
 
 type Client struct {
@@ -214,20 +228,67 @@ func (c *Client) CreateClone(ctx context.Context, instance Instance, pit time.Ti
 	c.logf("Clone requested (ID: %s). Waiting for instance provisioning...\n", clone.Id)
 	response, err := wait.CloneInstanceWaitHandler(ctx, c.api.DefaultAPI, c.projectID, c.region, clone.Id).WaitWithContext(ctx)
 	if err != nil {
+		// Clean up broken/partial instance so cloud state is not left dangling
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		_ = c.DeleteInstance(cleanupCtx, Instance{Name: cloneName, ID: clone.Id})
 		return Instance{}, fmt.Errorf("wait for clone instance name %q, clone id %q: %w", instance.Name, clone.Id, err)
 	}
 	c.logf("Clone instance %q (ID: %s) is now ready.\n", response.Name, response.Id)
 
-	return Instance{
+	cloneInst := Instance{
 		Name: response.Name,
 		ID:   response.Id,
-	}, nil
+	}
+
+	host, port, endpointErr := c.GetInstanceEndpoint(ctx, cloneInst)
+	if endpointErr == nil && host != "" {
+		if waitErr := c.WaitForEndpointReady(ctx, host, port); waitErr != nil {
+			c.logf("Warning: DNS/connectivity readiness check: %v. Proceeding...\n", waitErr)
+		}
+	}
+
+	return cloneInst, nil
+}
+
+func (c *Client) WaitForEndpointReady(ctx context.Context, host string, port int32) error {
+	c.logf("Waiting for DNS resolution and network connectivity on %s:%d...\n", host, port)
+	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	for {
+		// First verify DNS resolves
+		_, dnsErr := net.LookupHost(host)
+		if dnsErr == nil {
+			// DNS resolved! Verify TCP connection
+			conn, tcpErr := net.DialTimeout("tcp", target, 3*time.Second)
+			if tcpErr == nil {
+				conn.Close()
+				c.logf("Connection established to %s:%d. Endpoint is ready.\n", host, port)
+				return nil
+			}
+		}
+
+		select {
+		case <-timeoutCtx.Done():
+			return fmt.Errorf("timed out waiting for endpoint %s:%d to become reachable: %w", host, port, timeoutCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *Client) DeleteInstance(ctx context.Context, instance Instance) error {
 	c.logf("Initiating deletion for temporary instance %q (ID: %s)...\n", instance.Name, instance.ID)
 	err := c.api.DefaultAPI.DeleteInstance(ctx, c.projectID, c.region, instance.ID).Execute()
 	if err != nil {
+		if IsNotFound(err) {
+			c.logf("Temporary instance %q (ID: %s) is already deleted or not found.\n", instance.Name, instance.ID)
+			return nil
+		}
 		if IsDeleteForbidden(err) {
 			c.logf("Warning: Temporary instance %q (ID: %s) could not be deleted due to permissions (403 Forbidden). Please delete it manually in STACKIT portal.\n", instance.Name, instance.ID)
 			return ErrDeleteInstanceForbidden
@@ -238,6 +299,10 @@ func (c *Client) DeleteInstance(ctx context.Context, instance Instance) error {
 	c.logf("Waiting for temporary instance %q deletion to complete...\n", instance.Name)
 	_, err = wait.DeleteInstanceWaitHandler(ctx, c.api.DefaultAPI, c.projectID, c.region, instance.ID).WaitWithContext(ctx)
 	if err != nil {
+		if IsNotFound(err) {
+			c.logf("Temporary instance %q deletion confirmed (resource removed).\n", instance.Name)
+			return nil
+		}
 		if IsDeleteForbidden(err) {
 			c.logf("Warning: Temporary instance %q (ID: %s) deletion check failed due to permissions (403 Forbidden).\n", instance.Name, instance.ID)
 			return ErrDeleteInstanceForbidden
