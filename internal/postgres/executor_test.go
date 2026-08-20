@@ -176,7 +176,7 @@ func TestIsIgnorableRestoreWarning(t *testing.T) {
 }
 
 func TestRunPgRestore_EmptyDumpPath(t *testing.T) {
-	err := RunPgRestore(nil, "localhost", 5432, "testdb", "", Credentials{})
+	err := RunPgRestore(nil, "localhost", 5432, "testdb", "", Credentials{}, nil)
 	if err == nil {
 		t.Fatal("expected error when dumpPath is empty, got nil")
 	}

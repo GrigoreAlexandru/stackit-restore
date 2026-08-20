@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -72,15 +71,6 @@ func ParseOptions(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	if opts.ProjectID != "" {
-		os.Setenv("STACKIT_PROJECT_ID", opts.ProjectID)
-	}
-	if opts.Region != "" {
-		os.Setenv("STACKIT_REGION", opts.Region)
-	}
-	if opts.ServiceAccountKeyPath != "" {
-		os.Setenv("STACKIT_SERVICE_ACCOUNT_KEY_PATH", opts.ServiceAccountKeyPath)
-	}
 
 	if opts.Action != "" || opts.Instance != "" || opts.Database != "" || opts.TargetInstance != "" || opts.TargetDatabase != "" || opts.NonInteractive {
 		opts.NonInteractive = true

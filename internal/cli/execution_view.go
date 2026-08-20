@@ -241,12 +241,15 @@ func (r *channelReporter) FailStep(index int, err error) {
 
 type channelLogWriter struct {
 	subChan chan tea.Msg
+	logger  *postgres.ExecutionLogger
 	buf     strings.Builder
 	mu      sync.Mutex
 }
 
 func (w *channelLogWriter) Write(p []byte) (n int, err error) {
-	postgres.AppendExecutionLog(p)
+	if w.logger != nil {
+		w.logger.Append(p)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -272,15 +275,21 @@ func (w *channelLogWriter) Flush() {
 	}
 }
 
+// RunWithStepView runs fn with either a TUI step-view (when stdout is a TTY) or a
+// linear streaming fallback. logger is injected so command output is captured and
+// forwarded to the live display simultaneously.
 func RunWithStepView(
 	ctx context.Context,
 	title string,
 	steps []string,
 	actionName string,
 	contextDetails map[string]string,
+	logger *postgres.ExecutionLogger,
 	fn func(ctx context.Context, reporter StepReporter) error,
 ) error {
-	postgres.ResetExecutionBuffer()
+	if logger != nil {
+		logger.Reset()
+	}
 
 	// Check if standard output is a TTY
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
@@ -302,8 +311,10 @@ func RunWithStepView(
 	p := tea.NewProgram(model)
 
 	reporter := &channelReporter{subChan: subChan}
-	writer := &channelLogWriter{subChan: subChan}
-	postgres.SetCustomOutputWriter(writer)
+	writer := &channelLogWriter{subChan: subChan, logger: logger}
+	if logger != nil {
+		logger.SetWriter(writer)
+	}
 
 	var workerErr error
 	var wg sync.WaitGroup
@@ -313,7 +324,9 @@ func RunWithStepView(
 		defer wg.Done()
 		defer func() {
 			writer.Flush()
-			postgres.SetCustomOutputWriter(nil)
+			if logger != nil {
+				logger.SetWriter(nil)
+			}
 			subChan <- msgExecutionDone{err: workerErr}
 		}()
 

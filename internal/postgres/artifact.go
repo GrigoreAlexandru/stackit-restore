@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -65,11 +65,32 @@ func (m *ArtifactManager) ListDumpArtifacts() ([]DumpArtifact, error) {
 		artifacts = append(artifacts, artifact)
 	}
 
-	sort.Slice(artifacts, func(i, j int) bool {
-		return artifacts[i].CreatedAt.After(artifacts[j].CreatedAt)
+	slices.SortFunc(artifacts, func(a, b DumpArtifact) int {
+		if a.CreatedAt.After(b.CreatedAt) {
+			return -1
+		}
+		if a.CreatedAt.Before(b.CreatedAt) {
+			return 1
+		}
+		return 0
 	})
 
 	return artifacts, nil
+}
+
+func GenerateDumpFilename(
+	timestamp time.Time,
+	mode DumpMode,
+	instanceID string,
+	databaseName string,
+) string {
+	return fmt.Sprintf(
+		"%s__%s__%s__%s.dump",
+		timestamp.UTC().Format("20060102T150405.000000Z"),
+		mode,
+		SanitizeFileName(instanceID),
+		SanitizeFileName(databaseName),
+	)
 }
 
 func (m *ArtifactManager) NewDumpArtifact(
@@ -79,13 +100,7 @@ func (m *ArtifactManager) NewDumpArtifact(
 	mode DumpMode,
 ) DumpArtifact {
 	timestamp := time.Now().UTC()
-	filename := fmt.Sprintf(
-		"%s__%s__%s__%s.dump",
-		timestamp.Format("20060102T150405Z"),
-		mode,
-		SanitizeFileName(instanceID),
-		SanitizeFileName(databaseName),
-	)
+	filename := GenerateDumpFilename(timestamp, mode, instanceID, databaseName)
 	path := filepath.Join(m.dumpDir, filename)
 
 	return DumpArtifact{

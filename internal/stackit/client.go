@@ -2,7 +2,6 @@ package stackit
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,39 +11,9 @@ import (
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/config"
 	sdkconfig "github.com/stackitcloud/stackit-sdk-go/core/config"
-	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
 	postgresflex "github.com/stackitcloud/stackit-sdk-go/services/postgresflex/v3api"
 	"github.com/stackitcloud/stackit-sdk-go/services/postgresflex/v3api/wait"
 )
-
-var ErrDeleteInstanceForbidden = errors.New("instance could not be deleted due to permissions (403 Forbidden)")
-
-func IsDeleteForbidden(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrDeleteInstanceForbidden) {
-		return true
-	}
-	var oapiErr *oapierror.GenericOpenAPIError
-	if errors.As(err, &oapiErr) && oapiErr.StatusCode == 403 {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "403") || strings.Contains(msg, "forbidden")
-}
-
-func IsNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	var oapiErr *oapierror.GenericOpenAPIError
-	if errors.As(err, &oapiErr) && oapiErr.StatusCode == 404 {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
-}
 
 type Client struct {
 	api          *postgresflex.APIClient

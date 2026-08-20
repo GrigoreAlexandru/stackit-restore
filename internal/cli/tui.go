@@ -12,7 +12,6 @@ import (
 
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/api"
 	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
-	"github.com/GrigoreAlexandru/Stackit-Restore/internal/stackit"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
@@ -191,7 +190,7 @@ func handleExecutionError(actionName string, contextDetails map[string]string, t
 		tracker.RenderSummary()
 	}
 
-	logPath, logErr := postgres.WriteErrorLog(getDumpDir(), actionName, contextDetails, err)
+	logPath, logErr := postgres.WriteErrorLog(nil, getDumpDir(), actionName, contextDetails, err)
 
 	fmt.Println("\n" + strings.Repeat("=", 80))
 	fmt.Println("ERROR: Operation failed.")
@@ -234,7 +233,6 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 		return api.Database{}, fmt.Errorf("database %q not found in instance %q", dbName, inst.Name)
 	}
 
-	postgres.ResetExecutionBuffer()
 
 	switch action(opts.Action) {
 	case actionDump:
@@ -296,12 +294,13 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			steps,
 			"dump",
 			contextDetails,
+			nil,
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
 				deleteForbidden := false
 				if err != nil {
-					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+					if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -363,6 +362,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
+				nil,
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dumpArtifact := api.DumpArtifact{
@@ -430,12 +430,13 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
+				nil,
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModeReplica, &targetBackup.CreatedAt)
 					deleteForbidden := false
 					if err != nil {
-						if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+						if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 							deleteForbidden = true
 						} else {
 							reporter.FailStep(0, err)
@@ -500,12 +501,13 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
+				nil,
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModePointInTime, opts.PITParsed)
 					deleteForbidden := false
 					if err != nil {
-						if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+						if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 							deleteForbidden = true
 						} else {
 							reporter.FailStep(0, err)
@@ -622,12 +624,13 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			steps,
 			"sync",
 			contextDetails,
+			nil,
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
 				deleteForbidden := false
 				if err != nil {
-					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+					if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -830,6 +833,7 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		steps,
 		"dump",
 		contextDetails,
+		nil,
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
 			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {
@@ -846,7 +850,7 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 			)
 			deleteForbidden := false
 			if err != nil {
-				if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+				if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 					deleteForbidden = true
 				} else {
 					reporter.FailStep(0, err)
@@ -1007,6 +1011,7 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		steps,
 		"restore",
 		contextDetails,
+		nil,
 		func(execCtx context.Context, reporter StepReporter) error {
 			switch a.selectedRestoreSource {
 			case restoreSourceDumpFile:
@@ -1046,7 +1051,7 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 				)
 				deleteForbidden := false
 				if err != nil {
-					if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+					if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 						deleteForbidden = true
 					} else {
 						reporter.FailStep(0, err)
@@ -1228,6 +1233,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		steps,
 		"sync",
 		contextDetails,
+		nil,
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
 			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {
@@ -1244,7 +1250,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 			)
 			deleteForbidden := false
 			if err != nil {
-				if (errors.Is(err, stackit.ErrDeleteInstanceForbidden) || stackit.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
+				if (errors.Is(err, api.ErrDeleteInstanceForbidden) || api.IsDeleteForbidden(err)) && strings.TrimSpace(dump.Path) != "" {
 					deleteForbidden = true
 				} else {
 					reporter.FailStep(0, err)

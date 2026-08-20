@@ -168,6 +168,7 @@ func RunPgDump(
 	dbname string,
 	outputPath string,
 	creds Credentials,
+	logger *ExecutionLogger,
 ) error {
 	args := []string{
 		"--host", host,
@@ -183,7 +184,7 @@ func RunPgDump(
 		"--verbose",
 	}
 
-	if err := runPostgresCommand(ctx, "pg_dump", args, creds); err != nil {
+	if err := runPostgresCommand(ctx, "pg_dump", args, creds, logger); err != nil {
 		return fmt.Errorf("create dump for database %q: %w", dbname, err)
 	}
 
@@ -197,6 +198,7 @@ func RunPgRestore(
 	dbname string,
 	dumpPath string,
 	creds Credentials,
+	logger *ExecutionLogger,
 ) error {
 	if strings.TrimSpace(dumpPath) == "" {
 		return fmt.Errorf("cannot execute pg_restore: dump file path is empty")
@@ -215,15 +217,23 @@ func RunPgRestore(
 		dumpPath,
 	}
 
-	if err := runPostgresCommand(ctx, "pg_restore", args, creds); err != nil {
+	if err := runPostgresCommand(ctx, "pg_restore", args, creds, logger); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			captured := GetExecutionLog()
+			var captured string
+			if logger != nil {
+				captured = logger.GetLog()
+			}
 			if IsIgnorableRestoreWarning(captured) {
-				out := GetOutputWriter()
+				var out io.Writer = os.Stdout
+				if logger != nil {
+					out = logger.GetWriter()
+				}
 				notice := "\nNote: pg_restore completed with non-fatal extension/role warnings (e.g. pg_stat_kcache). Core data restored successfully.\n"
 				fmt.Fprint(out, notice)
-				AppendExecutionLog([]byte(notice))
+				if logger != nil {
+					logger.Append([]byte(notice))
+				}
 				return ErrRestoreWithWarnings
 			}
 		}
@@ -233,10 +243,14 @@ func RunPgRestore(
 	return nil
 }
 
-type logWriter struct{}
+type logWriter struct {
+	logger *ExecutionLogger
+}
 
 func (l logWriter) Write(p []byte) (n int, err error) {
-	AppendExecutionLog(p)
+	if l.logger != nil {
+		l.logger.Append(p)
+	}
 	return len(p), nil
 }
 
@@ -245,11 +259,17 @@ func runPostgresCommand(
 	command string,
 	args []string,
 	credentials Credentials,
+	logger *ExecutionLogger,
 ) error {
-	out := GetOutputWriter()
+	var out io.Writer = os.Stdout
+	if logger != nil {
+		out = logger.GetWriter()
+	}
 	cmdStr := fmt.Sprintf("\n$ %s %s\n", command, strings.Join(args, " "))
 	fmt.Fprint(out, cmdStr)
-	AppendExecutionLog([]byte(cmdStr))
+	if logger != nil {
+		logger.Append([]byte(cmdStr))
+	}
 
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Env = append(os.Environ(),
@@ -257,12 +277,15 @@ func runPostgresCommand(
 		"PGSSLMODE="+credentials.SSLMode,
 	)
 
-	cmd.Stdout = io.MultiWriter(out, logWriter{})
-	cmd.Stderr = io.MultiWriter(out, logWriter{})
+	lw := logWriter{logger: logger}
+	cmd.Stdout = io.MultiWriter(out, lw)
+	cmd.Stderr = io.MultiWriter(out, lw)
 
 	if err := cmd.Run(); err != nil {
 		errStr := fmt.Sprintf("\nCommand failed with error: %v\n", err)
-		AppendExecutionLog([]byte(errStr))
+		if logger != nil {
+			logger.Append([]byte(errStr))
+		}
 		return fmt.Errorf("run %s: %w", command, err)
 	}
 

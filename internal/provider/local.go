@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -24,8 +23,8 @@ type LocalProvider struct {
 }
 
 func NewLocalProvider(cfg config.Config) *LocalProvider {
-	host := cfg.LocalHost
-	if strings.TrimSpace(host) == "" {
+	host := strings.TrimSpace(cfg.LocalHost)
+	if host == "" {
 		host = "localhost"
 	}
 	port := int32(cfg.LocalPort)
@@ -33,14 +32,8 @@ func NewLocalProvider(cfg config.Config) *LocalProvider {
 		port = 5432
 	}
 
-	defaultDB := cfg.LocalDB
-	if strings.TrimSpace(defaultDB) == "" {
-		defaultDB = os.Getenv("LOCAL_DB")
-	}
-	if strings.TrimSpace(defaultDB) == "" {
-		defaultDB = os.Getenv("LOCAL_DATABASE")
-	}
-	if strings.TrimSpace(defaultDB) == "" {
+	defaultDB := strings.TrimSpace(cfg.LocalDB)
+	if defaultDB == "" {
 		defaultDB = "postgres"
 	}
 
@@ -66,19 +59,16 @@ func (p *LocalProvider) GetInstances(ctx context.Context) ([]stackit.Instance, e
 }
 
 func (p *LocalProvider) GetDatabases(ctx context.Context, instance stackit.Instance) ([]stackit.Database, error) {
-	_ = ctx
-	_ = instance
-
-	dbName := p.defaultDatabase
-	if envDB := os.Getenv("LOCAL_DB"); strings.TrimSpace(envDB) != "" {
-		dbName = envDB
-	} else if envDB := os.Getenv("LOCAL_DATABASE"); strings.TrimSpace(envDB) != "" {
-		dbName = envDB
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
+	_ = instance
 
 	return []stackit.Database{
 		{
-			Name:  dbName,
+			Name:  p.defaultDatabase,
 			ID:    1,
 			Owner: "postgres",
 		},

@@ -88,6 +88,7 @@ func TestRunWithStepView_NonTTY(t *testing.T) {
 		steps,
 		"test",
 		details,
+		nil,
 		func(ctx context.Context, reporter StepReporter) error {
 			reporter.StartStep(0)
 			reporter.CompleteStep(0)

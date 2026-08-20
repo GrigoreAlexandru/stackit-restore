@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,8 +35,11 @@ var (
 type Client struct {
 	router    *provider.Router
 	artifacts *postgres.ArtifactManager
+	logger    *postgres.ExecutionLogger
 }
 
+// NewClient creates an API client from the provided configuration.
+// Callers can set an output writer afterwards via SetOutputWriter.
 func NewClient(cfg config.Config) (*Client, error) {
 	localProvider := provider.NewLocalProvider(cfg)
 
@@ -49,12 +52,23 @@ func NewClient(cfg config.Config) (*Client, error) {
 		stackitProvider = provider.NewStackitProvider(st, cfg.Region)
 	}
 
-	router := provider.NewRouter(localProvider, stackitProvider)
+	var router *provider.Router
+	if stackitProvider != nil {
+		router = provider.NewRouter(localProvider, stackitProvider)
+	} else {
+		router = provider.NewRouter(localProvider)
+	}
 
 	return &Client{
 		router:    router,
 		artifacts: postgres.NewArtifactManager(cfg.DumpDir),
+		logger:    postgres.NewExecutionLogger(nil),
 	}, nil
+}
+
+// SetOutputWriter configures the writer that command output is streamed to.
+func (c *Client) SetOutputWriter(w interface{ Write([]byte) (int, error) }) {
+	c.logger.SetWriter(w)
 }
 
 func CheckPreflightTools() error {
@@ -139,35 +153,7 @@ func (c *Client) CreateDump(
 			backupTime = latest
 		}
 
-		clone, err := p.CreateClone(ctx, instance, backupTime)
-		if err != nil {
-			return DumpArtifact{}, err
-		}
-
-		cloneProvider, err := c.router.Route(clone)
-		if err != nil {
-			cloneProvider = p
-		}
-
-		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode, sourceCreds, instance)
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-		deleteErr := p.DeleteInstance(cleanupCtx, clone)
-		cancel()
-
-		if dumpErr != nil {
-			if deleteErr != nil {
-				return DumpArtifact{}, fmt.Errorf("dump extraction failed: %w (temporary clone cleanup: %v)", dumpErr, deleteErr)
-			}
-			return DumpArtifact{}, dumpErr
-		}
-		if deleteErr != nil {
-			if stackit.IsDeleteForbidden(deleteErr) {
-				return dump, stackit.ErrDeleteInstanceForbidden
-			}
-			return DumpArtifact{}, fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr)
-		}
-
-		return dump, nil
+		return c.createDumpViaClone(ctx, p, instance, database, mode, backupTime, sourceCreds)
 
 	case DumpModePointInTime:
 		if !p.SupportsCloning() {
@@ -177,39 +163,53 @@ func (c *Client) CreateDump(
 			return DumpArtifact{}, fmt.Errorf("point in time is required for %q mode", mode)
 		}
 
-		clone, err := p.CreateClone(ctx, instance, *pit)
-		if err != nil {
-			return DumpArtifact{}, err
-		}
-
-		cloneProvider, err := c.router.Route(clone)
-		if err != nil {
-			cloneProvider = p
-		}
-
-		dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode, sourceCreds, instance)
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-		deleteErr := p.DeleteInstance(cleanupCtx, clone)
-		cancel()
-
-		if dumpErr != nil {
-			if deleteErr != nil {
-				return DumpArtifact{}, fmt.Errorf("dump extraction failed: %w (temporary clone cleanup: %v)", dumpErr, deleteErr)
-			}
-			return DumpArtifact{}, dumpErr
-		}
-		if deleteErr != nil {
-			if stackit.IsDeleteForbidden(deleteErr) {
-				return dump, stackit.ErrDeleteInstanceForbidden
-			}
-			return DumpArtifact{}, fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr)
-		}
-
-		return dump, nil
+		return c.createDumpViaClone(ctx, p, instance, database, mode, *pit, sourceCreds)
 
 	default:
 		return DumpArtifact{}, fmt.Errorf("unsupported dump mode %q", mode)
 	}
+}
+
+// createDumpViaClone contains the shared clone → dump → cleanup flow used by
+// both DumpModeReplica and DumpModePointInTime.
+func (c *Client) createDumpViaClone(
+	ctx context.Context,
+	p provider.Provider,
+	instance Instance,
+	database Database,
+	mode DumpMode,
+	pit time.Time,
+	sourceCreds postgres.Credentials,
+) (DumpArtifact, error) {
+	clone, err := p.CreateClone(ctx, instance, pit)
+	if err != nil {
+		return DumpArtifact{}, err
+	}
+
+	cloneProvider, err := c.router.Route(clone)
+	if err != nil {
+		cloneProvider = p
+	}
+
+	dump, dumpErr := c.createDumpFromInstance(ctx, cloneProvider, clone, database, mode, sourceCreds, instance)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	deleteErr := p.DeleteInstance(cleanupCtx, clone)
+	cancel()
+
+	if dumpErr != nil {
+		if deleteErr != nil {
+			return DumpArtifact{}, fmt.Errorf("dump extraction failed: %w (temporary clone cleanup: %v)", dumpErr, deleteErr)
+		}
+		return DumpArtifact{}, dumpErr
+	}
+	if deleteErr != nil {
+		if stackit.IsDeleteForbidden(deleteErr) {
+			return dump, stackit.ErrDeleteInstanceForbidden
+		}
+		return DumpArtifact{}, fmt.Errorf("delete temporary clone instance %q: %w", clone.Name, deleteErr)
+	}
+
+	return dump, nil
 }
 
 func (c *Client) RestoreDump(
@@ -237,7 +237,7 @@ func (c *Client) RestoreDump(
 		return err
 	}
 
-	return postgres.RunPgRestore(ctx, endpoint.Host, endpoint.Port, database.Name, dump.Path, credentials)
+	return postgres.RunPgRestore(ctx, endpoint.Host, endpoint.Port, database.Name, dump.Path, credentials, c.logger)
 }
 
 func (c *Client) RestoreFromPIT(
@@ -267,8 +267,14 @@ func (c *Client) getLatestBackupTime(ctx context.Context, p provider.Provider, i
 		return time.Time{}, fmt.Errorf("no backups available for instance %q", instance.Name)
 	}
 
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].CreatedAt.After(backups[j].CreatedAt)
+	slices.SortFunc(backups, func(a, b Backup) int {
+		if a.CreatedAt.After(b.CreatedAt) {
+			return -1
+		}
+		if a.CreatedAt.Before(b.CreatedAt) {
+			return 1
+		}
+		return 0
 	})
 
 	return backups[0].CreatedAt, nil
@@ -290,7 +296,7 @@ func (c *Client) createDumpFromInstance(
 
 	artifact := c.artifacts.NewDumpArtifact(sourceInstance.ID, sourceInstance.Name, database.Name, mode)
 
-	if err := postgres.RunPgDump(ctx, endpoint.Host, endpoint.Port, database.Name, artifact.Path, credentials); err != nil {
+	if err := postgres.RunPgDump(ctx, endpoint.Host, endpoint.Port, database.Name, artifact.Path, credentials, c.logger); err != nil {
 		return DumpArtifact{}, err
 	}
 

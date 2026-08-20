@@ -94,30 +94,14 @@ func Load() (Config, error) {
 		cfg.DumpDir = value
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateLocal(); err != nil {
 		return Config{}, err
-	}
-
-	if err := os.MkdirAll(cfg.DumpDir, 0o755); err != nil {
-		return Config{}, fmt.Errorf("create dump directory: %w", err)
 	}
 
 	return cfg, nil
 }
 
-func (c Config) Validate() error {
-	if strings.TrimSpace(c.ProjectID) == "" {
-		return fmt.Errorf("STACKIT_PROJECT_ID is required")
-	}
-
-	if strings.TrimSpace(c.Region) == "" {
-		return fmt.Errorf("STACKIT_REGION is required")
-	}
-
-	if strings.TrimSpace(c.ServiceAccountKeyPath) == "" {
-		return fmt.Errorf("STACKIT_SERVICE_ACCOUNT_KEY_PATH is required")
-	}
-
+func (c Config) ValidateLocal() error {
 	if c.OperationPollIntervalSeconds <= 0 {
 		return fmt.Errorf(
 			"STACKIT_OPERATION_POLL_INTERVAL_SECONDS must be greater than 0",
@@ -135,6 +119,31 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c Config) ValidateStackIT() error {
+	if err := c.ValidateLocal(); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.ProjectID) == "" {
+		return fmt.Errorf("STACKIT_PROJECT_ID is required")
+	}
+
+	if strings.TrimSpace(c.Region) == "" {
+		return fmt.Errorf("STACKIT_REGION is required")
+	}
+
+	if strings.TrimSpace(c.ServiceAccountKeyPath) == "" {
+		return fmt.Errorf("STACKIT_SERVICE_ACCOUNT_KEY_PATH is required")
+	}
+
+	return nil
+}
+
+// Validate is an alias for ValidateStackIT to maintain backwards compatibility where full validation is expected.
+func (c Config) Validate() error {
+	return c.ValidateStackIT()
 }
 
 func (c Config) HasAuth() bool {
