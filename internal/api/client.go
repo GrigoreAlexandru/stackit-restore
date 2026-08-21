@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -33,9 +34,10 @@ var (
 )
 
 type Client struct {
-	router    *provider.Router
-	artifacts *postgres.ArtifactManager
-	logger    *postgres.ExecutionLogger
+	router          *provider.Router
+	artifacts       *postgres.ArtifactManager
+	logger          *postgres.ExecutionLogger
+	stackitProvider *provider.StackitProvider
 }
 
 // NewClient creates an API client from the provided configuration.
@@ -60,15 +62,24 @@ func NewClient(cfg config.Config) (*Client, error) {
 	}
 
 	return &Client{
-		router:    router,
-		artifacts: postgres.NewArtifactManager(cfg.DumpDir),
-		logger:    postgres.NewExecutionLogger(nil),
+		router:          router,
+		artifacts:       postgres.NewArtifactManager(cfg.DumpDir),
+		logger:          postgres.NewExecutionLogger(nil),
+		stackitProvider: stackitProvider,
 	}, nil
 }
 
 // SetOutputWriter configures the writer that command output is streamed to.
-func (c *Client) SetOutputWriter(w interface{ Write([]byte) (int, error) }) {
+func (c *Client) SetOutputWriter(w io.Writer) {
 	c.logger.SetWriter(w)
+	if c.stackitProvider != nil {
+		c.stackitProvider.SetOutputWriter(w)
+	}
+}
+
+// Logger returns the execution logger instance used by this client.
+func (c *Client) Logger() *postgres.ExecutionLogger {
+	return c.logger
 }
 
 func CheckPreflightTools() error {

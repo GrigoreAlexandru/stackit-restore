@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GrigoreAlexandru/Stackit-Restore/internal/postgres"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -80,6 +81,7 @@ func TestExecutionModel_TransitionsAndRendering(t *testing.T) {
 func TestRunWithStepView_NonTTY(t *testing.T) {
 	steps := []string{"Step 1", "Step 2"}
 	details := map[string]string{"Action": "test"}
+	logger := postgres.NewExecutionLogger(nil)
 
 	executed := false
 	err := RunWithStepView(
@@ -88,7 +90,7 @@ func TestRunWithStepView_NonTTY(t *testing.T) {
 		steps,
 		"test",
 		details,
-		nil,
+		logger,
 		func(ctx context.Context, reporter StepReporter) error {
 			reporter.StartStep(0)
 			reporter.CompleteStep(0)
@@ -104,5 +106,43 @@ func TestRunWithStepView_NonTTY(t *testing.T) {
 	}
 	if !executed {
 		t.Errorf("expected worker function to execute")
+	}
+}
+
+func TestChannelLogWriter_LineBuffering(t *testing.T) {
+	subChan := make(chan tea.Msg, 10)
+	writer := &channelLogWriter{subChan: subChan}
+
+	// Write partial line
+	_, _ = writer.Write([]byte("hello "))
+	select {
+	case <-subChan:
+		t.Fatal("unexpected message for incomplete line")
+	default:
+	}
+
+	// Complete the line
+	_, _ = writer.Write([]byte("world\n"))
+	select {
+	case msg := <-subChan:
+		lineMsg, ok := msg.(msgOutputLine)
+		if !ok || lineMsg.line != "hello world" {
+			t.Fatalf("expected 'hello world', got %+v", msg)
+		}
+	default:
+		t.Fatal("expected message for completed line")
+	}
+
+	// Test flush for un-terminated trailing line
+	_, _ = writer.Write([]byte("trailing text without newline"))
+	writer.Flush()
+	select {
+	case msg := <-subChan:
+		lineMsg, ok := msg.(msgOutputLine)
+		if !ok || lineMsg.line != "trailing text without newline" {
+			t.Fatalf("expected 'trailing text without newline', got %+v", msg)
+		}
+	default:
+		t.Fatal("expected message after flush")
 	}
 }

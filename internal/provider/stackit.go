@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -12,6 +13,12 @@ import (
 type StackitProvider struct {
 	client *stackit.Client
 	region string
+}
+
+func (p *StackitProvider) SetOutputWriter(w io.Writer) {
+	if p != nil && p.client != nil {
+		p.client.SetOutputWriter(w)
+	}
 }
 
 func NewStackitProvider(client *stackit.Client, region string) *StackitProvider {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +31,8 @@ type API interface {
 	CreateDump(ctx context.Context, instance api.Instance, database api.Database, mode api.DumpMode, pit *time.Time) (api.DumpArtifact, error)
 	RestoreDump(ctx context.Context, instance api.Instance, database api.Database, dump api.DumpArtifact) error
 	RestoreFromPIT(ctx context.Context, instance api.Instance, database api.Database, pit time.Time) (api.DumpArtifact, error)
+	SetOutputWriter(w io.Writer)
+	Logger() *postgres.ExecutionLogger
 }
 
 type action string
@@ -184,13 +187,13 @@ func getDumpDir() string {
 	return dir
 }
 
-func handleExecutionError(actionName string, contextDetails map[string]string, tracker *StepTracker, failedStep int, err error) error {
+func handleExecutionError(actionName string, contextDetails map[string]string, tracker *StepTracker, failedStep int, err error, logger *postgres.ExecutionLogger) error {
 	if tracker != nil {
 		tracker.FailStep(failedStep, err)
 		tracker.RenderSummary()
 	}
 
-	logPath, logErr := postgres.WriteErrorLog(nil, getDumpDir(), actionName, contextDetails, err)
+	logPath, logErr := postgres.WriteErrorLog(logger, getDumpDir(), actionName, contextDetails, err)
 
 	fmt.Println("\n" + strings.Repeat("=", 80))
 	fmt.Println("ERROR: Operation failed.")
@@ -294,7 +297,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			steps,
 			"dump",
 			contextDetails,
-			nil,
+			apiClient.Logger(),
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
@@ -362,7 +365,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
-				nil,
+				apiClient.Logger(),
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dumpArtifact := api.DumpArtifact{
@@ -430,7 +433,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
-				nil,
+				apiClient.Logger(),
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModeReplica, &targetBackup.CreatedAt)
@@ -501,7 +504,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 				steps,
 				"restore",
 				contextDetails,
-				nil,
+				apiClient.Logger(),
 				func(execCtx context.Context, reporter StepReporter) error {
 					reporter.StartStep(0)
 					dump, err := apiClient.CreateDump(execCtx, srcInst, dstDB, api.DumpModePointInTime, opts.PITParsed)
@@ -624,7 +627,7 @@ func runNonInteractive(ctx context.Context, apiClient API, opts Options) error {
 			steps,
 			"sync",
 			contextDetails,
-			nil,
+			apiClient.Logger(),
 			func(execCtx context.Context, reporter StepReporter) error {
 				reporter.StartStep(0)
 				dump, err := apiClient.CreateDump(execCtx, srcInst, srcDB, mode, opts.PITParsed)
@@ -833,7 +836,7 @@ func (a *appForm) runDumpFlow(ctx context.Context) error {
 		steps,
 		"dump",
 		contextDetails,
-		nil,
+		a.apiClient.Logger(),
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
 			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {
@@ -1011,7 +1014,7 @@ func (a *appForm) runRestoreFlow(ctx context.Context) error {
 		steps,
 		"restore",
 		contextDetails,
-		nil,
+		a.apiClient.Logger(),
 		func(execCtx context.Context, reporter StepReporter) error {
 			switch a.selectedRestoreSource {
 			case restoreSourceDumpFile:
@@ -1233,7 +1236,7 @@ func (a *appForm) runSyncFlow(ctx context.Context) error {
 		steps,
 		"sync",
 		contextDetails,
-		nil,
+		a.apiClient.Logger(),
 		func(execCtx context.Context, reporter StepReporter) error {
 			var pit *time.Time
 			if a.selectedDumpMode == api.DumpModePointInTime || a.selectedDumpMode == api.DumpModeReplica {

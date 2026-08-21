@@ -241,15 +241,11 @@ func (r *channelReporter) FailStep(index int, err error) {
 
 type channelLogWriter struct {
 	subChan chan tea.Msg
-	logger  *postgres.ExecutionLogger
 	buf     strings.Builder
 	mu      sync.Mutex
 }
 
 func (w *channelLogWriter) Write(p []byte) (n int, err error) {
-	if w.logger != nil {
-		w.logger.Append(p)
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -300,7 +296,7 @@ func RunWithStepView(
 		tracker.PrintHeader()
 		err := fn(ctx, tracker)
 		if err != nil {
-			return handleExecutionError(actionName, contextDetails, tracker, 0, err)
+			return handleExecutionError(actionName, contextDetails, tracker, 0, err, logger)
 		}
 		tracker.RenderSummary()
 		return nil
@@ -311,7 +307,7 @@ func RunWithStepView(
 	p := tea.NewProgram(model)
 
 	reporter := &channelReporter{subChan: subChan}
-	writer := &channelLogWriter{subChan: subChan, logger: logger}
+	writer := &channelLogWriter{subChan: subChan}
 	if logger != nil {
 		logger.SetWriter(writer)
 	}
@@ -339,17 +335,17 @@ func RunWithStepView(
 	if pErr != nil {
 		// If Bubble Tea encountered an error running TUI, handle workerErr directly
 		if workerErr != nil {
-			return handleExecutionError(actionName, contextDetails, nil, 0, workerErr)
+			return handleExecutionError(actionName, contextDetails, nil, 0, workerErr, logger)
 		}
 		return nil
 	}
 
 	m, ok := finalModel.(executionModel)
 	if ok && m.err != nil {
-		return handleExecutionError(actionName, contextDetails, nil, 0, m.err)
+		return handleExecutionError(actionName, contextDetails, nil, 0, m.err, logger)
 	}
 	if workerErr != nil {
-		return handleExecutionError(actionName, contextDetails, nil, 0, workerErr)
+		return handleExecutionError(actionName, contextDetails, nil, 0, workerErr, logger)
 	}
 
 	// Render the final clean checklist summary
